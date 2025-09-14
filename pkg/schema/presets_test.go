@@ -80,6 +80,7 @@ func TestGetJaegerSchema(t *testing.T) {
 	}
 
 	expectedFields := map[string]bool{
+		"startTimeMillis":  true,
 		"startTime":        true,
 		"traceID":          true,
 		"spanID":           true,

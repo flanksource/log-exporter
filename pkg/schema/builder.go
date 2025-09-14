@@ -310,7 +310,7 @@ func (b *Builder) buildKubernetesFieldFromMapping(fieldName, esType string) api.
 func (b *Builder) isJaegerField(fieldName string) bool {
 	jaegerFields := []string{
 		"traceID", "spanID", "parentSpanID", "operationName", "serviceName",
-		"startTime", "duration", "span.kind", "error",
+		"startTimeMillis", "startTime", "duration", "span.kind", "error",
 	}
 
 	for _, jf := range jaegerFields {
@@ -372,7 +372,7 @@ func (b *Builder) buildJaegerFieldFromMapping(fieldName, esType string) api.Pret
 			"red":    ">= 1000000", // >= 1s
 		}
 
-	case fieldName == "startTime":
+	case fieldName == "startTimeMillis" || fieldName == "startTime":
 		field.Format = "date"
 		field.Style = "text-gray-500 text-sm font-mono"
 		field.DateFormat = "15:04:05.000"

@@ -1,18 +1,16 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
+	"github.com/flanksource/clicky"
+	"github.com/flanksource/commons/logger"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 )
 
 var (
 	cfgFile string
-	verbose bool
-	debug   bool
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -24,16 +22,16 @@ and formatting them using clicky's powerful formatting capabilities.
 
 Features:
 - Export from OpenSearch with dynamic index/field completion
-- Multiple output formats (table, json, yaml, csv, html, pdf, markdown)  
+- Multiple output formats (table, json, yaml, csv, html, pdf, markdown)
 - Auto-generated schemas with customizable styling
 - Time range queries and advanced filtering
 - Shell completion for indexes and fields`,
 	Example: `  # Export OpenSearch logs as a table
   log-exporter export opensearch --host https://opensearch.example.com --index "logs-*" --query "level:ERROR"
-  
+
   # Export to CSV with specific fields
   log-exporter export opensearch --index app-logs --fields "timestamp,message,host" --format csv -o logs.csv
-  
+
   # Use custom schema for formatting
   log-exporter export opensearch --index logs --schema my-schema.yaml --format html -o report.html`,
 }
@@ -46,10 +44,10 @@ func Execute() error {
 func init() {
 	cobra.OnInitialize(initConfig)
 
+	clicky.BindAllFlags(rootCmd.PersistentFlags()).UseFlags()
+
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.log-exporter.yaml)")
-	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
-	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "debug output")
 
 	// Add completion command
 	rootCmd.AddCommand(completionCmd)
@@ -74,7 +72,7 @@ func initConfig() {
 
 	// If a config file is found, read it in.
 	if cfgFile != "" {
-		fmt.Printf("Using config file: %s\n", cfgFile)
+		logger.Infof("Using config file: %s\n", cfgFile)
 	}
 }
 
@@ -140,23 +138,13 @@ PowerShell:
 
 // Global flag accessors
 func IsVerbose() bool {
-	return verbose
+	return clicky.Flags.LevelCount > 0
 }
 
 func IsDebug() bool {
-	return debug
+	return clicky.Flags.LevelCount > 1
 }
 
 func GetConfigFile() string {
 	return cfgFile
-}
-
-// BindGlobalFlags binds global flags to a provided flag set
-func BindGlobalFlags(flagSet *pflag.FlagSet, verbosePtr *bool, debugPtr *bool) {
-	if verbosePtr != nil {
-		flagSet.BoolVarP(verbosePtr, "verbose", "v", false, "verbose output")
-	}
-	if debugPtr != nil {
-		flagSet.BoolVar(debugPtr, "debug", false, "debug output")
-	}
 }

@@ -3,9 +3,11 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/flanksource/commons/logger"
 	"github.com/flanksource/log-exporter/pkg/opensearch"
 )
 
@@ -20,7 +22,6 @@ type opensearchFlags struct {
 	from          string
 	to            string
 	limit         int
-	format        string
 	output        string
 	schema        string
 	preset        string
@@ -33,8 +34,9 @@ type opensearchFlags struct {
 	sample        bool
 	sampleOutput  string
 	sampleSize    int
-	verbose       bool
-	debug         bool
+	scrollSize    int
+	scrollTimeout string
+	noScroll      bool
 }
 
 var osFlags = &opensearchFlags{}
@@ -45,7 +47,7 @@ var opensearchCmd = &cobra.Command{
 	SilenceUsage: true,
 	Short:        "Export logs from OpenSearch/Elasticsearch",
 	Long: `Export logs from OpenSearch or Elasticsearch clusters with advanced querying capabilities.
-Supports Lucene query strings and full OpenSearch JSON Query DSL, dynamic completion for index names 
+Supports Lucene query strings and full OpenSearch JSON Query DSL, dynamic completion for index names
 and field names, automatic schema generation, and all clicky output formats.`,
 	Example: `  # Basic export with Lucene query string
   log-exporter export opensearch --host https://opensearch.example.com --index "logs-*" --query "level:ERROR"
@@ -85,18 +87,24 @@ and field names, automatic schema generation, and all clicky output formats.`,
   # Export sample data with custom size and output
   log-exporter export opensearch --index "filebeat-*" --from "2024-01-01" --to "2024-01-07" --sample --sample-size 200 --sample-output ./testdata
 
+  # Export large result set with custom scroll settings
+  log-exporter export opensearch --index logs --limit 50000 --scroll-size 2000 --scroll-timeout "2m"
+
   # Export with authentication
   log-exporter export opensearch --host https://opensearch.example.com --username admin --password secret --index logs`,
 	RunE: runOpensearchExport,
 }
 
 func init() {
+	// Add import subcommand
+	opensearchCmd.AddCommand(opensearchImportCmd)
+
 	flags := opensearchCmd.Flags()
 
 	// Connection flags
-	flags.StringVar(&osFlags.host, "host", "http://localhost:9200", "OpenSearch host URL")
-	flags.StringVarP(&osFlags.username, "username", "u", "", "Username for authentication")
-	flags.StringVarP(&osFlags.password, "password", "p", "", "Password for authentication")
+	opensearchCmd.PersistentFlags().StringVar(&osFlags.host, "host", "http://localhost:9200", "OpenSearch host URL")
+	opensearchCmd.PersistentFlags().StringVarP(&osFlags.username, "username", "u", os.Getenv("OPENSEARCH_USERNAME"), "Username for authentication")
+	opensearchCmd.PersistentFlags().StringVarP(&osFlags.password, "password", "p", os.Getenv("OPENSEARCH_PASSWORD"), "Password for authentication")
 
 	// Query flags
 	flags.StringVarP(&osFlags.index, "index", "i", "", "Index name or pattern (required)")
@@ -108,11 +116,10 @@ func init() {
 	flags.IntVarP(&osFlags.limit, "limit", "l", 500, "Maximum number of records to export")
 
 	// Output flags
-	flags.StringVarP(&osFlags.format, "format", "f", "table", "Output format (table, json, yaml, csv, html, pdf, markdown)")
-	flags.StringVarP(&osFlags.output, "output", "o", "", "Output file path (default: stdout)")
+	flags.StringVarP(&osFlags.output, "output", "o", "logs.json", "Output file path (default: logs.json)")
 	flags.StringVar(&osFlags.schema, "schema", "", "Custom clicky schema file for formatting")
 	flags.StringVar(&osFlags.preset, "preset", "", "Use preset schema (kubernetes, jaeger, combined)")
-	flags.BoolVar(&osFlags.autoDetect, "auto-detect", false, "Automatically detect log type from index pattern")
+	flags.BoolVar(&osFlags.autoDetect, "auto-detect", true, "Automatically detect log type from index pattern")
 
 	// Filter flags
 	flags.StringVar(&osFlags.k8sNamespace, "k8s-namespace", "", "Filter by Kubernetes namespace")
@@ -126,8 +133,10 @@ func init() {
 	flags.StringVar(&osFlags.sampleOutput, "sample-output", "./opensearch-sample", "Output directory for sample data")
 	flags.IntVar(&osFlags.sampleSize, "sample-size", 100, "Number of sample records to export per index")
 
-	// Global flags
-	BindGlobalFlags(flags, &osFlags.verbose, &osFlags.debug)
+	// Scroll flags
+	flags.IntVar(&osFlags.scrollSize, "scroll-size", 1000, "Number of documents to fetch per scroll batch")
+	flags.StringVar(&osFlags.scrollTimeout, "scroll-timeout", "1m", "Keep-alive time for scroll context (e.g., '1m', '30s')")
+	flags.BoolVar(&osFlags.noScroll, "no-scroll", false, "Disable scroll API even for large result sets")
 
 	// Mark required flags
 	opensearchCmd.MarkFlagRequired("index")
@@ -159,16 +168,16 @@ func runOpensearchExport(cmd *cobra.Command, args []string) error {
 
 		query = string(queryBytes)
 
-		if osFlags.verbose || IsVerbose() {
-			fmt.Printf("Read query from file: %s\n", osFlags.queryFile)
+		if IsVerbose() {
+			logger.Infof("Read query from file: %s\n", osFlags.queryFile)
 		}
 	}
 
-	if osFlags.verbose || IsVerbose() {
-		fmt.Printf("Connecting to OpenSearch at: %s\n", osFlags.host)
-		fmt.Printf("Exporting from index: %s\n", osFlags.index)
+	if IsVerbose() {
+		logger.Infof("Connecting to OpenSearch at: %s\n", osFlags.host)
+		logger.Infof("Exporting from index: %s\n", osFlags.index)
 		if query != "*" {
-			fmt.Printf("Query: %s\n", query)
+			logger.Infof("Query: %s\n", query)
 		}
 	}
 
@@ -177,13 +186,23 @@ func runOpensearchExport(cmd *cobra.Command, args []string) error {
 		Host:     osFlags.host,
 		Username: osFlags.username,
 		Password: osFlags.password,
-		Debug:    osFlags.debug || IsDebug(),
-		Verbose:  osFlags.verbose || IsVerbose(),
+		Debug:    IsDebug(),
+		Verbose:  IsVerbose(),
 	}
 
 	client, err := opensearch.NewClient(config)
 	if err != nil {
 		return fmt.Errorf("failed to create OpenSearch client: %w", err)
+	}
+
+	// Parse scroll timeout
+	var scrollTimeout time.Duration
+	if osFlags.scrollTimeout != "" {
+		var err error
+		scrollTimeout, err = time.ParseDuration(osFlags.scrollTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid scroll timeout '%s': %w", osFlags.scrollTimeout, err)
+		}
 	}
 
 	// Build export options
@@ -194,7 +213,6 @@ func runOpensearchExport(cmd *cobra.Command, args []string) error {
 		From:       osFlags.from, // Pass raw string, will be parsed with datemath support
 		To:         osFlags.to,   // Pass raw string, will be parsed with datemath support
 		Limit:      osFlags.limit,
-		Format:     osFlags.format,
 		Output:     osFlags.output,
 		Schema:     osFlags.schema,
 		Preset:     osFlags.preset,
@@ -206,6 +224,11 @@ func runOpensearchExport(cmd *cobra.Command, args []string) error {
 			OtelService:   osFlags.otelService,
 			OtelOperation: osFlags.otelOperation,
 		},
+		Scroll: opensearch.ScrollConfig{
+			Size:    osFlags.scrollSize,
+			Timeout: scrollTimeout,
+			Enabled: !osFlags.noScroll,
+		},
 	}
 
 	// Perform export
@@ -213,11 +236,11 @@ func runOpensearchExport(cmd *cobra.Command, args []string) error {
 }
 
 func runSampleExport(cmd *cobra.Command, args []string) error {
-	if osFlags.verbose || IsVerbose() {
-		fmt.Printf("Starting sample export from: %s\n", osFlags.host)
-		fmt.Printf("Index pattern: %s\n", osFlags.index)
-		fmt.Printf("Sample size: %d per index\n", osFlags.sampleSize)
-		fmt.Printf("Output directory: %s\n", osFlags.sampleOutput)
+	if IsVerbose() {
+		logger.Infof("Starting sample export from: %s\n", osFlags.host)
+		logger.Infof("Index pattern: %s\n", osFlags.index)
+		logger.Infof("Sample size: %d per index\n", osFlags.sampleSize)
+		logger.Infof("Output directory: %s\n", osFlags.sampleOutput)
 	}
 
 	// Create OpenSearch client
@@ -225,8 +248,8 @@ func runSampleExport(cmd *cobra.Command, args []string) error {
 		Host:     osFlags.host,
 		Username: osFlags.username,
 		Password: osFlags.password,
-		Debug:    osFlags.debug || IsDebug(),
-		Verbose:  osFlags.verbose || IsVerbose(),
+		Debug:    IsDebug(),
+		Verbose:  IsVerbose(),
 	}
 
 	client, err := opensearch.NewClient(config)

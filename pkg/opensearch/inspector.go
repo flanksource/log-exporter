@@ -156,6 +156,7 @@ func (c *Client) detectTimestampField(fieldTypes map[string]string, availableFie
 		}
 	case "jaeger":
 		timestampCandidates = []string{
+			"startTimeMillis",
 			"startTime",
 			"@timestamp",
 			"timestamp",
@@ -199,7 +200,7 @@ func (c *Client) detectTimestampField(fieldTypes map[string]string, availableFie
 	// No date field found, return default based on type
 	switch logType {
 	case "jaeger":
-		return "startTime", false
+		return "startTimeMillis", false
 	default:
 		return "@timestamp", false
 	}
@@ -232,7 +233,7 @@ func GetRecommendedTimestampField(logType string) string {
 	case "kubernetes":
 		return "@timestamp"
 	case "jaeger":
-		return "startTime"
+		return "startTimeMillis"
 	default:
 		return "@timestamp"
 	}

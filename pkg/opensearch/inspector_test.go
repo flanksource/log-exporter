@@ -85,6 +85,17 @@ func TestDetectTimestampField(t *testing.T) {
 			expectedHasDate: true,
 		},
 		{
+			name: "jaeger with startTimeMillis",
+			fieldTypes: map[string]string{
+				"startTimeMillis": "date",
+				"traceID":         "keyword",
+			},
+			availableFields: []string{"startTimeMillis", "traceID", "spanID"},
+			logType:         "jaeger",
+			expectedField:   "startTimeMillis",
+			expectedHasDate: true,
+		},
+		{
 			name: "jaeger with startTime",
 			fieldTypes: map[string]string{
 				"startTime": "date",
@@ -119,7 +130,7 @@ func TestDetectTimestampField(t *testing.T) {
 			fieldTypes:      map[string]string{"message": "text"},
 			availableFields: []string{"message", "level"},
 			logType:         "jaeger",
-			expectedField:   "startTime",
+			expectedField:   "startTimeMillis",
 			expectedHasDate: false,
 		},
 	}
@@ -145,7 +156,7 @@ func TestGetRecommendedTimestampField(t *testing.T) {
 		expected string
 	}{
 		{"kubernetes", "@timestamp"},
-		{"jaeger", "startTime"},
+		{"jaeger", "startTimeMillis"},
 		{"generic", "@timestamp"},
 		{"unknown", "@timestamp"},
 	}

@@ -90,6 +90,14 @@ func GetJaegerSchema() *api.PrettyObject {
 	return &api.PrettyObject{
 		Fields: []api.PrettyField{
 			{
+				Name:       "startTimeMillis",
+				Type:       "string",
+				Format:     "date",
+				Style:      "text-gray-500 text-sm font-mono",
+				DateFormat: "15:04:05.000",
+				Label:      "Start Time",
+			},
+			{
 				Name:       "startTime",
 				Type:       "string",
 				Format:     "date",
@@ -278,6 +286,7 @@ func GetJaegerFieldSuggestions() []string {
 		"parentSpanID",
 		"operationName",
 		"serviceName",
+		"startTimeMillis",
 		"startTime",
 		"duration",
 		"span.kind",

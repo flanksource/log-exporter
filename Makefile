@@ -103,15 +103,6 @@ test-coverage: ## Run tests with coverage
 	go tool cover -html=$(COVERAGE_OUT) -o coverage.html
 	@echo "Coverage report generated: coverage.html"
 
-.PHONY: test-race
-test-race: ## Run tests with race detection
-	@echo "Running tests with race detection..."
-	go test -v -race ./...
-
-.PHONY: test-bench
-test-bench: ## Run benchmark tests
-	@echo "Running benchmark tests..."
-	go test -v -bench=. -benchmem ./...
 
 ##@ Docker
 .PHONY: docker-test

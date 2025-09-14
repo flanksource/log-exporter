@@ -83,8 +83,10 @@ func GetFieldMappings(logType string, availableFields []string) *FieldMapping {
 		}
 
 	case "jaeger":
-		// Jaeger/OTEL typically uses flat field names
-		if fieldMap["servicename"] {
+		// Jaeger/OTEL typically uses nested field names
+		if fieldMap["process.servicename"] {
+			mapping.Service = "process.serviceName"
+		} else if fieldMap["servicename"] {
 			mapping.Service = "serviceName"
 		} else if fieldMap["service.name"] {
 			mapping.Service = "service.name"

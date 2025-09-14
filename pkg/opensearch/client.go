@@ -1,14 +1,18 @@
 package opensearch
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/flanksource/clicky"
 	"github.com/flanksource/clicky/api"
-	"github.com/flanksource/clicky/formatters"
+	"github.com/flanksource/commons/logger"
 	"github.com/samber/lo"
+	"sigs.k8s.io/yaml"
 
 	dutyContext "github.com/flanksource/duty/context"
 	"github.com/flanksource/duty/logs"
@@ -34,12 +38,24 @@ type ExportOptions struct {
 	From       string // Raw time string (will be parsed with datemath support)
 	To         string // Raw time string (will be parsed with datemath support)
 	Limit      int
-	Format     string
 	Output     string
 	Schema     string
 	Preset     string
 	AutoDetect bool
 	Filters    FilterOptions
+	Scroll     ScrollConfig
+}
+
+type ImportOptions struct {
+	SampleFile string
+	BatchSize  int
+	Force      bool
+}
+
+type ScrollConfig struct {
+	Size    int
+	Timeout time.Duration
+	Enabled bool
 }
 
 type Client struct {
@@ -90,8 +106,8 @@ func (c *Client) Export(opts ExportOptions) error {
 	indexInfo, err := c.InspectIndex(opts.Index)
 	if err != nil {
 		if c.config.Verbose {
-			fmt.Printf("Warning: Failed to inspect index '%s': %v\n", opts.Index, err)
-			fmt.Printf("Falling back to default settings\n")
+			logger.Infof("Warning: Failed to inspect index '%s': %v\n", opts.Index, err)
+			logger.Infof("Falling back to default settings\n")
 		}
 		// Create fallback index info
 		indexInfo = &IndexInfo{
@@ -103,16 +119,16 @@ func (c *Client) Export(opts ExportOptions) error {
 	}
 
 	if c.config.Verbose {
-		fmt.Printf("Index inspection results:\n")
-		fmt.Printf("  Type: %s\n", indexInfo.Type)
-		fmt.Printf("  Timestamp field: %s\n", indexInfo.TimestampField)
-		fmt.Printf("  Available fields: %d\n", len(indexInfo.AvailableFields))
+		logger.Infof("Index inspection results:\n")
+		logger.Infof("  Type: %s\n", indexInfo.Type)
+		logger.Infof("  Timestamp field: %s\n", indexInfo.TimestampField)
+		logger.Infof("  Available fields: %d\n", len(indexInfo.AvailableFields))
 
 		warnings := indexInfo.ValidateIndexInfo()
 		if len(warnings) > 0 {
-			fmt.Printf("  Warnings:\n")
+			logger.Infof("  Warnings:\n")
 			for _, warning := range warnings {
-				fmt.Printf("    - %s\n", warning)
+				logger.Infof("    - %s\n", warning)
 			}
 		}
 	}
@@ -124,7 +140,7 @@ func (c *Client) Export(opts ExportOptions) error {
 	}
 
 	if c.config.Verbose && (fromTime != "" || toTime != "") {
-		fmt.Printf("Time range: %s to %s\n", fromTime, toTime)
+		logger.Infof("Time range: %s to %s\n", fromTime, toTime)
 	}
 
 	// Step 3: Process filters if any are specified
@@ -135,21 +151,21 @@ func (c *Client) Export(opts ExportOptions) error {
 
 		// Debug output for field mappings
 		if c.config.Debug {
-			fmt.Printf("DEBUG: Field mappings for log type '%s':\n", indexInfo.Type)
+			logger.Infof("DEBUG: Field mappings for log type '%s':\n", indexInfo.Type)
 			if fieldMapping.Namespace != "" {
-				fmt.Printf("DEBUG:   Namespace: %s\n", fieldMapping.Namespace)
+				logger.Infof("DEBUG:   Namespace: %s\n", fieldMapping.Namespace)
 			}
 			if fieldMapping.Pod != "" {
-				fmt.Printf("DEBUG:   Pod: %s\n", fieldMapping.Pod)
+				logger.Infof("DEBUG:   Pod: %s\n", fieldMapping.Pod)
 			}
 			if fieldMapping.Deployment != "" {
-				fmt.Printf("DEBUG:   Deployment: %s\n", fieldMapping.Deployment)
+				logger.Infof("DEBUG:   Deployment: %s\n", fieldMapping.Deployment)
 			}
 			if fieldMapping.Service != "" {
-				fmt.Printf("DEBUG:   Service: %s\n", fieldMapping.Service)
+				logger.Infof("DEBUG:   Service: %s\n", fieldMapping.Service)
 			}
 			if fieldMapping.Operation != "" {
-				fmt.Printf("DEBUG:   Operation: %s\n", fieldMapping.Operation)
+				logger.Infof("DEBUG:   Operation: %s\n", fieldMapping.Operation)
 			}
 		}
 
@@ -159,16 +175,16 @@ func (c *Client) Export(opts ExportOptions) error {
 		// Show warnings for filters that couldn't be applied
 		warnings := ValidateFilters(opts.Filters, fieldMapping, indexInfo.Type, indexInfo.AvailableFields)
 		if len(warnings) > 0 && (c.config.Verbose || c.config.Debug) {
-			fmt.Printf("Filter warnings:\n")
+			logger.Infof("Filter warnings:\n")
 			for _, warning := range warnings {
-				fmt.Printf("  - %s\n", warning)
+				logger.Infof("  - %s\n", warning)
 			}
 		}
 
 		if c.config.Verbose && len(filterConstraints) > 0 {
-			fmt.Printf("Applied filters:\n")
+			logger.Infof("Applied filters:\n")
 			for _, constraint := range filterConstraints {
-				fmt.Printf("  - %s: %s\n", constraint.Field, constraint.Value)
+				logger.Infof("  - %s: %s\n", constraint.Field, constraint.Value)
 			}
 		}
 	}
@@ -180,7 +196,7 @@ func (c *Client) Export(opts ExportOptions) error {
 	}
 
 	if c.config.Debug || c.config.Verbose {
-		fmt.Printf("Executing query: %s\n", query)
+		logger.Infof("Executing query: %s\n", query)
 
 		// In debug mode, show formatted JSON query for better readability
 		if c.config.Debug {
@@ -188,23 +204,40 @@ func (c *Client) Export(opts ExportOptions) error {
 		}
 	}
 
-	request := dutyOS.Request{
-		Index: opts.Index,
-		Query: query,
-		Limit: fmt.Sprintf("%d", opts.Limit),
-	}
 	searcher, err := c.GetSearcher()
 	if err != nil {
 		return fmt.Errorf("failed to get searcher: %w", err)
 	}
 
-	result, err := searcher.Search(dutyContext.New(), request)
-	if err != nil {
-		return fmt.Errorf("failed to search: %w", err)
+	// Determine if we should use scroll based on limit and scroll configuration
+	const scrollThreshold = 10000
+	useScroll := opts.Scroll.Enabled && opts.Limit > scrollThreshold
+
+	if c.config.Debug {
+		logger.Infof("DEBUG: Limit: %d, Scroll enabled: %v, Use scroll: %v\n", opts.Limit, opts.Scroll.Enabled, useScroll)
+	}
+
+	var result *logs.LogResult
+	if useScroll {
+		result, err = c.performScrollSearch(searcher, opts, query)
+		if err != nil {
+			return fmt.Errorf("failed to perform scroll search: %w", err)
+		}
+	} else {
+		// Use regular search for smaller result sets
+		request := dutyOS.Request{
+			Index: opts.Index,
+			Query: query,
+			Limit: fmt.Sprintf("%d", opts.Limit),
+		}
+		result, err = searcher.Search(dutyContext.New(), request)
+		if err != nil {
+			return fmt.Errorf("failed to search: %w", err)
+		}
 	}
 
 	if c.config.Verbose {
-		fmt.Printf("Found %d log entries\n", len(result.Logs))
+		logger.Infof("Found %d log entries\n", len(result.Logs))
 	}
 
 	// Convert to exportable data structure
@@ -232,9 +265,11 @@ func (c *Client) Export(opts ExportOptions) error {
 	} else if opts.AutoDetect {
 		// Auto-detect schema from index pattern
 		schema, err = c.autoDetectSchema(opts.Index, opts.Fields)
+		yamlData, err := yaml.Marshal(schema)
+		os.WriteFile(opts.Index+".schema.yaml", yamlData, 0644)
 		if err != nil {
 			if c.config.Verbose {
-				fmt.Printf("Warning: Failed to auto-detect schema, using mapping-based: %v\n", err)
+				logger.Infof("Warning: Failed to auto-detect schema, using mapping-based: %v\n", err)
 			}
 			// Fallback to mapping-based schema
 			schema, err = c.buildMappingBasedSchema(opts.Index, opts.Fields, result.Logs)
@@ -255,19 +290,19 @@ func (c *Client) Export(opts ExportOptions) error {
 func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromTime, toTime string, filterConstraints []FilterConstraint) (string, error) {
 	// Debug output for filter constraints
 	if c.config.Debug && len(filterConstraints) > 0 {
-		fmt.Printf("DEBUG: Filter constraints being applied:\n")
+		logger.Infof("DEBUG: Filter constraints being applied:\n")
 		for i, constraint := range filterConstraints {
-			fmt.Printf("DEBUG:   [%d] Field: %s, Value: %s\n", i+1, constraint.Field, constraint.Value)
+			logger.Infof("DEBUG:   [%d] Field: %s, Value: %s\n", i+1, constraint.Field, constraint.Value)
 		}
 	}
 
 	// Check if this is a JSON query
 	if IsJSONQuery(opts.Query) {
 		if c.config.Verbose {
-			fmt.Printf("Detected JSON query, processing as OpenSearch Query DSL\n")
+			logger.Infof("Detected JSON query, processing as OpenSearch Query DSL\n")
 		}
 		if c.config.Debug {
-			fmt.Printf("DEBUG: Original user query: %s\n", opts.Query)
+			logger.Infof("DEBUG: Original user query: %s\n", opts.Query)
 		}
 
 		// Validate the JSON query
@@ -335,12 +370,37 @@ func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromT
 			},
 		}
 
+		rangeParams := timeQuery["range"].(map[string]interface{})[timestampField].(map[string]interface{})
+
 		if fromTime != "" {
-			timeQuery["range"].(map[string]interface{})[timestampField].(map[string]interface{})["gte"] = fromTime
+			if timestampField == "startTimeMillis" {
+				// Convert RFC3339 time to epoch milliseconds for startTimeMillis field
+				if t, err := time.Parse(time.RFC3339, fromTime); err == nil {
+					rangeParams["gte"] = t.UnixMilli()
+				} else {
+					rangeParams["gte"] = fromTime
+				}
+			} else {
+				rangeParams["gte"] = fromTime
+			}
 		}
 
 		if toTime != "" {
-			timeQuery["range"].(map[string]interface{})[timestampField].(map[string]interface{})["lte"] = toTime
+			if timestampField == "startTimeMillis" {
+				// Convert RFC3339 time to epoch milliseconds for startTimeMillis field
+				if t, err := time.Parse(time.RFC3339, toTime); err == nil {
+					rangeParams["lte"] = t.UnixMilli()
+				} else {
+					rangeParams["lte"] = toTime
+				}
+			} else {
+				rangeParams["lte"] = toTime
+			}
+		}
+
+		// Add format specification for Jaeger timestamps (startTimeMillis)
+		if timestampField == "startTimeMillis" {
+			rangeParams["format"] = "epoch_millis"
 		}
 
 		query["query"].(map[string]interface{})["bool"].(map[string]interface{})["must"] = append(
@@ -355,11 +415,18 @@ func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromT
 	}
 
 	// Add sorting using the detected timestamp field
+	sortParams := map[string]interface{}{
+		"order": "desc",
+	}
+
+	// Add unmapped_type for Jaeger timestamps
+	if timestampField == "startTimeMillis" {
+		sortParams["unmapped_type"] = "boolean"
+	}
+
 	query["sort"] = []interface{}{
 		map[string]interface{}{
-			timestampField: map[string]interface{}{
-				"order": "desc",
-			},
+			timestampField: sortParams,
 		},
 	}
 
@@ -385,28 +452,47 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string) (i
 	for _, logLine := range logLines {
 		entry := make(map[string]interface{})
 
-		// Always include core fields
-		entry["id"] = logLine.ID
-		entry["timestamp"] = logLine.FirstObserved.Format(time.RFC3339)
-		entry["message"] = logLine.Message
-
-		if logLine.Severity != "" {
-			entry["severity"] = logLine.Severity
-		}
-		if logLine.Source != "" {
-			entry["source"] = logLine.Source
-		}
-		if logLine.Host != "" {
-			entry["host"] = logLine.Host
-		}
-		if logLine.Count > 1 {
-			entry["count"] = logLine.Count
-		}
-
-		// Add labels
+		// Use labels as primary data source (contains raw OpenSearch fields)
+		// This preserves the original field names from OpenSearch
 		if logLine.Labels != nil {
 			for k, v := range logLine.Labels {
 				entry[k] = v
+			}
+		}
+		
+		// Add core fields only if not already present from labels
+		// and only if no specific fields are requested (preserve raw data when fields are specified)
+		if len(fields) == 0 {
+			if _, exists := entry["id"]; !exists {
+				entry["id"] = logLine.ID
+			}
+			if _, hasTimestamp := entry["@timestamp"]; !hasTimestamp {
+				if _, hasTimestampAlt := entry["timestamp"]; !hasTimestampAlt {
+					entry["timestamp"] = logLine.FirstObserved.Format(time.RFC3339)
+				}
+			}
+			if _, exists := entry["message"]; !exists {
+				entry["message"] = logLine.Message
+			}
+			if logLine.Severity != "" {
+				if _, exists := entry["severity"]; !exists {
+					entry["severity"] = logLine.Severity
+				}
+			}
+			if logLine.Source != "" {
+				if _, exists := entry["source"]; !exists {
+					entry["source"] = logLine.Source
+				}
+			}
+			if logLine.Host != "" {
+				if _, exists := entry["host"]; !exists {
+					entry["host"] = logLine.Host
+				}
+			}
+			if logLine.Count > 1 {
+				if _, exists := entry["count"]; !exists {
+					entry["count"] = logLine.Count
+				}
 			}
 		}
 
@@ -524,14 +610,6 @@ func (c *Client) generateFieldSchema(fieldName string) api.PrettyField {
 }
 
 func (c *Client) formatOutput(data interface{}, schema *api.PrettyObject, opts ExportOptions) error {
-	formatOpts := formatters.FormatOptions{
-		Format:  opts.Format,
-		Output:  opts.Output,
-		Schema:  schema,
-		Verbose: c.config.Verbose,
-	}
-
-	manager := formatters.NewFormatManager()
 
 	// Wrap slice data in a container for clicky's ParseDataWithSchema
 	// which expects a struct or single map, not a slice
@@ -553,20 +631,35 @@ func (c *Client) formatOutput(data interface{}, schema *api.PrettyObject, opts E
 		return fmt.Errorf("failed to parse data with schema: %w", err)
 	}
 
-	output, err := manager.FormatWithSchema(prettyData, formatOpts)
-	if err != nil {
-		return fmt.Errorf("failed to format data: %w", err)
+	// Determine format based on file extension if available, otherwise use clicky's format
+	format := clicky.Flags.FormatOptions.ResolveFormat()
+	if opts.Output != "" && strings.HasSuffix(strings.ToLower(opts.Output), ".json") {
+		format = "json"
+	}
+	
+	if format == "json" {
+		// Use standard JSON encoder without HTML escaping for clean output
+		var buf bytes.Buffer
+		encoder := json.NewEncoder(&buf)
+		encoder.SetEscapeHTML(false)
+		encoder.SetIndent("", "  ")
+		
+		if err := encoder.Encode(data); err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		
+		return os.WriteFile(opts.Output, buf.Bytes(), 0644)
+	} else if format == "yaml" || (opts.Output != "" && strings.HasSuffix(strings.ToLower(opts.Output), ".yaml")) {
+		yamlData, err := yaml.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("failed to marshal YAML: %w", err)
+		}
+		return os.WriteFile(opts.Output, yamlData, 0644)
 	}
 
-	// Output result
-	if opts.Output != "" {
-		// Write to file (clicky handles this internally)
-		if c.config.Verbose {
-			fmt.Printf("Output written to %s\n", opts.Output)
-		}
-	} else {
-		// Print to stdout
-		fmt.Print(output)
+	err = clicky.FormatToFile(prettyData, clicky.Flags.FormatOptions, opts.Output)
+	if err != nil {
+		return fmt.Errorf("failed to format data: %w", err)
 	}
 
 	return nil
@@ -591,7 +684,7 @@ func (c *Client) autoDetectSchema(indexPattern string, fields []string) (*api.Pr
 	for _, pattern := range k8sPatterns {
 		if strings.Contains(lowerIndex, pattern) {
 			if c.config.Verbose {
-				fmt.Printf("Auto-detected Kubernetes logs from index pattern: %s\n", indexPattern)
+				logger.Infof("Auto-detected Kubernetes logs from index pattern: %s\n", indexPattern)
 			}
 			return c.wrapSchemaInContainer(schemaBuilder.GetKubernetesSchema()), nil
 		}
@@ -602,7 +695,7 @@ func (c *Client) autoDetectSchema(indexPattern string, fields []string) (*api.Pr
 	for _, pattern := range jaegerPatterns {
 		if strings.Contains(lowerIndex, pattern) {
 			if c.config.Verbose {
-				fmt.Printf("Auto-detected Jaeger traces from index pattern: %s\n", indexPattern)
+				logger.Infof("Auto-detected Jaeger traces from index pattern: %s\n", indexPattern)
 			}
 			return c.wrapSchemaInContainer(schemaBuilder.GetJaegerSchema()), nil
 		}
@@ -623,7 +716,7 @@ func (c *Client) buildMappingBasedSchema(indexPattern string, fields []string, l
 	if err != nil {
 		// Fallback to basic schema generation from log data
 		if c.config.Verbose {
-			fmt.Printf("Warning: Failed to build schema from mapping, using fallback: %v\n", err)
+			logger.Infof("Warning: Failed to build schema from mapping, using fallback: %v\n", err)
 		}
 		logSchema, err = c.generateSchema(logLines, fields)
 		if err != nil {
@@ -656,7 +749,7 @@ func (c *Client) wrapSchemaInContainer(logSchema *api.PrettyObject) *api.PrettyO
 // printFormattedQuery prints the query in a formatted JSON structure for debugging
 func (c *Client) printFormattedQuery(query string) {
 	if query == "" {
-		fmt.Printf("DEBUG: Empty query\n")
+		logger.Infof("DEBUG: Empty query\n")
 		return
 	}
 
@@ -664,18 +757,117 @@ func (c *Client) printFormattedQuery(query string) {
 	var jsonQuery map[string]interface{}
 	if err := json.Unmarshal([]byte(query), &jsonQuery); err != nil {
 		// If it's not JSON (e.g., Lucene query), just print as-is
-		fmt.Printf("DEBUG: Query (Lucene): %s\n", query)
+		logger.Infof("DEBUG: Query (Lucene): %s\n", query)
 		return
 	}
 
 	// Pretty print the JSON
 	prettyBytes, err := json.MarshalIndent(jsonQuery, "DEBUG: ", "  ")
 	if err != nil {
-		fmt.Printf("DEBUG: Query (raw): %s\n", query)
+		logger.Infof("DEBUG: Query (raw): %s\n", query)
 		return
 	}
 
-	fmt.Printf("DEBUG: Query (formatted JSON):\n%s\n", string(prettyBytes))
+	logger.Infof("DEBUG: Query (formatted JSON):\n%s\n", string(prettyBytes))
+}
+
+// performScrollSearch executes a scroll search for large result sets
+func (c *Client) performScrollSearch(searcher *dutyOS.Searcher, opts ExportOptions, query string) (*logs.LogResult, error) {
+	ctx := dutyContext.New()
+
+	// Set up scroll options with defaults
+	scrollSize := opts.Scroll.Size
+	if scrollSize <= 0 {
+		scrollSize = 1000
+	}
+
+	scrollTimeout := opts.Scroll.Timeout
+	if scrollTimeout == 0 {
+		scrollTimeout = time.Minute
+	}
+
+	if c.config.Debug {
+		logger.Infof("DEBUG: Starting scroll search with size=%d, timeout=%v\n", scrollSize, scrollTimeout)
+	}
+
+	// Create scroll request
+	scrollReq := dutyOS.ScrollRequest{
+		Request: dutyOS.Request{
+			Index: opts.Index,
+			Query: query,
+		},
+		Scroll: dutyOS.ScrollOptions{
+			Size:    scrollSize,
+			Timeout: scrollTimeout,
+			Enabled: true,
+		},
+	}
+
+	// Initialize the scroll
+	initialResult, scrollID, err := searcher.SearchWithScroll(ctx, scrollReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize scroll: %w", err)
+	}
+
+	// Ensure we clean up the scroll context
+	defer func() {
+		if scrollID != "" {
+			if err := searcher.ClearScroll(ctx, scrollID); err != nil && c.config.Verbose {
+				logger.Infof("Warning: Failed to clear scroll: %v\n", err)
+			}
+		}
+	}()
+
+	if c.config.Debug {
+		logger.Infof("DEBUG: Initial scroll returned %d documents, scroll_id: %s\n", len(initialResult.Logs), scrollID[:20]+"...")
+	}
+
+	// Collect all results
+	allLogs := initialResult.Logs
+	totalFetched := len(allLogs)
+
+	// Continue scrolling until we have enough results or no more data
+	for scrollID != "" && totalFetched < opts.Limit {
+		if c.config.Verbose {
+			logger.Infof("Scroll progress: %d/%d documents fetched\n", totalFetched, opts.Limit)
+		}
+
+		nextResult, nextScrollID, err := searcher.ScrollNext(ctx, scrollID, scrollTimeout)
+		if err != nil {
+			return nil, fmt.Errorf("failed to continue scroll: %w", err)
+		}
+
+		// No more results
+		if len(nextResult.Logs) == 0 {
+			break
+		}
+
+		if c.config.Debug {
+			logger.Infof("DEBUG: Scroll next returned %d documents\n", len(nextResult.Logs))
+		}
+
+		// Add results, but respect the limit
+		remaining := opts.Limit - totalFetched
+		if len(nextResult.Logs) > remaining {
+			allLogs = append(allLogs, nextResult.Logs[:remaining]...)
+			totalFetched = opts.Limit
+			break
+		} else {
+			allLogs = append(allLogs, nextResult.Logs...)
+			totalFetched += len(nextResult.Logs)
+		}
+
+		scrollID = nextScrollID
+	}
+
+	if c.config.Verbose {
+		logger.Infof("Scroll completed. Total documents fetched: %d\n", totalFetched)
+	}
+
+	// Return combined result
+	return &logs.LogResult{
+		Logs: allLogs,
+	}, nil
 }
 
 // ParseFields splits a comma-separated field list into a slice

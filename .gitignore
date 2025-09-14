@@ -1,3 +1,6 @@
 logs.json
 log-exporter*
 hack/
+*.csv
+log-exporter*
+*.json

@@ -230,6 +230,7 @@ func (c *Client) getFieldSuggestionsByIndexPattern(indexPattern string) []string
 				"parentSpanID",
 				"operationName",
 				"serviceName",
+				"startTimeMillis",
 				"startTime",
 				"duration",
 				"span.kind",

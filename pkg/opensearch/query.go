@@ -84,11 +84,18 @@ func MergeJSONWithTimeRange(jsonQuery string, timestampField, fromTime, toTime s
 		},
 	}
 
+	rangeParams := timeRangeQuery["range"].(map[string]interface{})[timestampField].(map[string]interface{})
+
 	if fromTime != "" {
-		timeRangeQuery["range"].(map[string]interface{})[timestampField].(map[string]interface{})["gte"] = fromTime
+		rangeParams["gte"] = fromTime
 	}
 	if toTime != "" {
-		timeRangeQuery["range"].(map[string]interface{})[timestampField].(map[string]interface{})["lte"] = toTime
+		rangeParams["lte"] = toTime
+	}
+
+	// Add format specification for Jaeger timestamps (startTimeMillis)
+	if timestampField == "startTimeMillis" {
+		rangeParams["format"] = "strict_date_optional_time"
 	}
 
 	// Check if this is a complete query or just a query clause

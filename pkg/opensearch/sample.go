@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flanksource/commons/logger"
 	"github.com/samber/lo"
 )
 
@@ -51,9 +52,9 @@ type IndexSample struct {
 // ExportSample exports sample data from OpenSearch indices for testing purposes
 func (c *Client) ExportSample(opts SampleOptions) error {
 	if c.config.Verbose {
-		fmt.Printf("Starting sample export for pattern: %s\n", opts.Index)
+		logger.Infof("Starting sample export for pattern: %s\n", opts.Index)
 		if opts.From != "" || opts.To != "" {
-			fmt.Printf("Date range: %s to %s\n", opts.From, opts.To)
+			logger.Infof("Date range: %s to %s\n", opts.From, opts.To)
 		}
 	}
 
@@ -68,7 +69,7 @@ func (c *Client) ExportSample(opts SampleOptions) error {
 	}
 
 	if c.config.Verbose {
-		fmt.Printf("Found %d indices: %v\n", len(indices), indices)
+		logger.Infof("Found %d indices: %v\n", len(indices), indices)
 	}
 
 	// Create output directory
@@ -93,13 +94,13 @@ func (c *Client) ExportSample(opts SampleOptions) error {
 	// Export sample from each index
 	for _, indexName := range indices {
 		if c.config.Verbose {
-			fmt.Printf("Exporting sample from index: %s\n", indexName)
+			logger.Infof("Exporting sample from index: %s\n", indexName)
 		}
 
 		sample, err := c.exportIndexSample(indexName, opts)
 		if err != nil {
 			if c.config.Verbose {
-				fmt.Printf("Warning: failed to export from index '%s': %v\n", indexName, err)
+				logger.Infof("Warning: failed to export from index '%s': %v\n", indexName, err)
 			}
 			continue
 		}
@@ -122,8 +123,8 @@ func (c *Client) ExportSample(opts SampleOptions) error {
 		return fmt.Errorf("failed to create import script: %w", err)
 	}
 
-	fmt.Printf("Sample data exported successfully to: %s\n", opts.OutputDir)
-	fmt.Printf("Exported %d indices with %d total documents\n",
+	logger.Infof("Sample data exported successfully to: %s\n", opts.OutputDir)
+	logger.Infof("Exported %d indices with %d total documents\n",
 		len(sampleData.Indices),
 		lo.SumBy(lo.Values(sampleData.Indices), func(s IndexSample) int { return len(s.Documents) }))
 
@@ -138,6 +139,12 @@ func (c *Client) exportIndexSample(indexName string, opts SampleOptions) (*Index
 		return nil, fmt.Errorf("failed to get index metadata: %w", err)
 	}
 
+	// Get index info to get available fields and timestamp field
+	indexInfo, err := c.InspectIndex(indexName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect index: %w", err)
+	}
+
 	// Build query with filters
 	query := "*"
 	var filterConstraints []FilterConstraint
@@ -145,12 +152,6 @@ func (c *Client) exportIndexSample(indexName string, opts SampleOptions) (*Index
 	if len(opts.Filters.K8sNamespace) > 0 || len(opts.Filters.K8sPod) > 0 ||
 		len(opts.Filters.K8sDeployment) > 0 || len(opts.Filters.OtelService) > 0 ||
 		len(opts.Filters.OtelOperation) > 0 {
-
-		// Get index info to get available fields
-		indexInfo, err := c.InspectIndex(indexName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to inspect index: %w", err)
-		}
 
 		// Use existing field mappings
 		mapping := GetFieldMappings(indexInfo.Type, indexInfo.AvailableFields)
@@ -173,11 +174,21 @@ func (c *Client) exportIndexSample(indexName string, opts SampleOptions) (*Index
 		}
 	}
 
+	// Prepare sort parameters based on index type
+	sortParams := map[string]interface{}{
+		"order": "desc",
+	}
+
+	// Add unmapped_type for Jaeger timestamps
+	if indexInfo.TimestampField == "startTimeMillis" {
+		sortParams["unmapped_type"] = "boolean"
+	}
+
 	// Search for sample documents
 	searchReq := map[string]interface{}{
 		"size": opts.SampleSize,
 		"sort": []map[string]interface{}{
-			{"@timestamp": map[string]string{"order": "desc"}},
+			{indexInfo.TimestampField: sortParams},
 		},
 	}
 
@@ -323,11 +334,11 @@ func main() {
 	}
 
 	sampleFile := os.Args[1]
-	
+
 	// Load sample data
 	data, err := loadSampleData(sampleFile)
 	if err != nil {
-		fmt.Printf("Failed to load sample data: %v\n", err)
+	logger.Infof("Failed to load sample data: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -343,7 +354,7 @@ func main() {
 		}),
 	)
 	if err != nil {
-		fmt.Printf("Failed to start OpenSearch container: %v\n", err)
+	logger.Infof("Failed to start OpenSearch container: %v\n", err)
 		os.Exit(1)
 	}
 	defer container.Terminate(ctx)
@@ -351,13 +362,13 @@ func main() {
 	// Get connection details
 	host, err := container.Host(ctx)
 	if err != nil {
-		fmt.Printf("Failed to get container host: %v\n", err)
+	logger.Infof("Failed to get container host: %v\n", err)
 		os.Exit(1)
 	}
 
 	port, err := container.MappedPort(ctx, "9200")
 	if err != nil {
-		fmt.Printf("Failed to get container port: %v\n", err)
+	logger.Infof("Failed to get container port: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -368,22 +379,22 @@ func main() {
 		Password:  "admin",
 	})
 	if err != nil {
-		fmt.Printf("Failed to create OpenSearch client: %v\n", err)
+	logger.Infof("Failed to create OpenSearch client: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Import data
-	fmt.Printf("Importing sample data into OpenSearch at %s:%s\n", host, port.Port())
-	
+logger.Infof("Importing sample data into OpenSearch at %s:%s\n", host, port.Port())
+
 	for indexName, indexSample := range data.Indices {
 		if err := importIndexSample(ctx, client, indexName, indexSample); err != nil {
-			fmt.Printf("Failed to import index %s: %v\n", indexName, err)
+		logger.Infof("Failed to import index %s: %v\n", indexName, err)
 			continue
 		}
-		fmt.Printf("Imported %d documents to index %s\n", len(indexSample.Documents), indexName)
+	logger.Infof("Imported %d documents to index %s\n", len(indexSample.Documents), indexName)
 	}
 
-	fmt.Printf("Import completed. OpenSearch is running at http://%s:%s\n", host, port.Port())
+logger.Infof("Import completed. OpenSearch is running at http://%s:%s\n", host, port.Port())
 	fmt.Println("Press Enter to stop the container...")
 	fmt.Scanln()
 }
