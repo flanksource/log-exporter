@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/flanksource/commons/logger"
 )
 
 // ListIndices retrieves all available indices from OpenSearch
@@ -187,6 +189,9 @@ func (c *Client) getFieldSuggestionsByIndexPattern(indexPattern string) []string
 	k8sPatterns := []string{"filebeat", "kubernetes", "k8s", "eks", "gke", "aks"}
 	for _, pattern := range k8sPatterns {
 		if strings.Contains(lowerIndex, pattern) {
+			if c.config.Verbose {
+				logger.Tracef(" Matched Kubernetes pattern '%s', returning Kubernetes field suggestions\n", pattern)
+			}
 			return []string{
 				"@timestamp",
 				"kubernetes.namespace",
@@ -224,6 +229,10 @@ func (c *Client) getFieldSuggestionsByIndexPattern(indexPattern string) []string
 	jaegerPatterns := []string{"jaeger", "span", "trace", "otel", "apm"}
 	for _, pattern := range jaegerPatterns {
 		if strings.Contains(lowerIndex, pattern) {
+			if c.config.Verbose {
+				logger.Tracef("Matched Jaeger/OpenTelemetry pattern '%s', returning Jaeger field suggestions\n", pattern)
+
+			}
 			return []string{
 				"traceID",
 				"spanID",
@@ -263,7 +272,6 @@ func (c *Client) getFieldSuggestionsByIndexPattern(indexPattern string) []string
 		}
 	}
 
-	// Default common fields
 	return []string{
 		"@timestamp",
 		"timestamp",

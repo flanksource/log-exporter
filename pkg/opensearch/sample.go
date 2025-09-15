@@ -147,7 +147,7 @@ func (c *Client) exportIndexSample(indexName string, opts SampleOptions) (*Index
 
 	// Build query with filters
 	query := "*"
-	var filterConstraints []FilterConstraint
+	var filterConstraints []MultiFieldConstraint
 
 	if len(opts.Filters.K8sNamespace) > 0 || len(opts.Filters.K8sPod) > 0 ||
 		len(opts.Filters.K8sDeployment) > 0 || len(opts.Filters.OtelService) > 0 ||
@@ -155,7 +155,7 @@ func (c *Client) exportIndexSample(indexName string, opts SampleOptions) (*Index
 
 		// Use existing field mappings
 		mapping := GetFieldMappings(indexInfo.Type, indexInfo.AvailableFields)
-		filterConstraints = BuildFilterConstraints(opts.Filters, mapping)
+		filterConstraints = BuildMultiFieldConstraints(opts.Filters, mapping)
 	}
 
 	// Add date range to query if specified
@@ -168,7 +168,7 @@ func (c *Client) exportIndexSample(indexName string, opts SampleOptions) (*Index
 
 	// Add filters to query
 	if len(filterConstraints) > 0 {
-		query, err = AddFiltersToQuery(query, filterConstraints)
+		query, err = AddMultiFieldFiltersToQuery(query, filterConstraints)
 		if err != nil {
 			return nil, fmt.Errorf("failed to add filters to query: %w", err)
 		}

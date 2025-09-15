@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/flanksource/commons/logger"
 )
 
 // IndexInfo represents information about an OpenSearch index
@@ -89,24 +91,54 @@ func (c *Client) detectLogType(indexPattern string, availableFields []string) st
 		fieldMap[strings.ToLower(field)] = true
 	}
 
+	if c.config.Verbose {
+		logger.Tracef(" Detecting log type for index pattern: %s\n", indexPattern)
+		logger.Tracef(" Available fields count: %d\n", len(availableFields))
+		if c.config.Debug {
+			logger.Tracef(" Available fields: %v\n", availableFields)
+		}
+	}
+
 	// Check for Kubernetes/Filebeat patterns
 	k8sPatterns := []string{"filebeat", "kubernetes", "k8s", "eks", "gke", "aks"}
 	k8sFields := []string{"kubernetes.namespace", "kubernetes.pod.name", "kubernetes.container.name"}
 
+	var matchedK8sPatterns []string
 	for _, pattern := range k8sPatterns {
 		if strings.Contains(lowerIndex, pattern) {
-			return "kubernetes"
+			matchedK8sPatterns = append(matchedK8sPatterns, pattern)
 		}
+	}
+
+	if len(matchedK8sPatterns) > 0 {
+		if c.config.Verbose {
+			logger.Tracef(" Matched Kubernetes patterns in index name: %v\n", matchedK8sPatterns)
+			logger.Tracef(" Detected log type: kubernetes (by pattern match)\n")
+		}
+		return "kubernetes"
 	}
 
 	// Check for Kubernetes fields in the mapping
 	k8sFieldCount := 0
+	var foundK8sFields []string
 	for _, field := range k8sFields {
 		if fieldMap[strings.ToLower(field)] {
 			k8sFieldCount++
+			foundK8sFields = append(foundK8sFields, field)
 		}
 	}
+
+	if c.config.Verbose {
+		logger.Tracef(" Kubernetes field detection: found %d/%d required fields\n", k8sFieldCount, 2)
+		if len(foundK8sFields) > 0 {
+			logger.Tracef(" Found Kubernetes fields: %v\n", foundK8sFields)
+		}
+	}
+
 	if k8sFieldCount >= 2 {
+		if c.config.Verbose {
+			logger.Tracef(" Detected log type: kubernetes (by field presence)\n")
+		}
 		return "kubernetes"
 	}
 
@@ -114,24 +146,49 @@ func (c *Client) detectLogType(indexPattern string, availableFields []string) st
 	jaegerPatterns := []string{"jaeger", "span", "trace", "otel", "apm"}
 	jaegerFields := []string{"traceid", "spanid", "servicename", "operationname", "starttime"}
 
+	var matchedJaegerPatterns []string
 	for _, pattern := range jaegerPatterns {
 		if strings.Contains(lowerIndex, pattern) {
-			return "jaeger"
+			matchedJaegerPatterns = append(matchedJaegerPatterns, pattern)
 		}
+	}
+
+	if len(matchedJaegerPatterns) > 0 {
+		if c.config.Verbose {
+			logger.Tracef(" Matched Jaeger/OpenTelemetry patterns in index name: %v\n", matchedJaegerPatterns)
+			logger.Tracef(" Detected log type: jaeger (by pattern match)\n")
+		}
+		return "jaeger"
 	}
 
 	// Check for Jaeger fields in the mapping
 	jaegerFieldCount := 0
+	var foundJaegerFields []string
 	for _, field := range jaegerFields {
 		if fieldMap[strings.ToLower(field)] {
 			jaegerFieldCount++
+			foundJaegerFields = append(foundJaegerFields, field)
 		}
 	}
+
+	if c.config.Verbose {
+		logger.Tracef(" Jaeger/OpenTelemetry field detection: found %d/%d required fields\n", jaegerFieldCount, 3)
+		if len(foundJaegerFields) > 0 {
+			logger.Tracef(" Found Jaeger/OpenTelemetry fields: %v\n", foundJaegerFields)
+		}
+	}
+
 	if jaegerFieldCount >= 3 {
+		if c.config.Verbose {
+			logger.Tracef(" Detected log type: jaeger (by field presence)\n")
+		}
 		return "jaeger"
 	}
 
 	// Default to generic
+	if c.config.Verbose {
+		logger.Tracef(" No specific patterns or fields matched, defaulting to: generic\n")
+	}
 	return "generic"
 }
 
@@ -140,6 +197,17 @@ func (c *Client) detectTimestampField(fieldTypes map[string]string, availableFie
 	fieldMap := make(map[string]bool)
 	for _, field := range availableFields {
 		fieldMap[field] = true
+	}
+
+	if c.config.Verbose {
+		logger.Tracef(" Detecting timestamp field for log type: %s\n", logType)
+		var dateFields []string
+		for field, fieldType := range fieldTypes {
+			if fieldType == "date" {
+				dateFields = append(dateFields, field)
+			}
+		}
+		logger.Tracef(" Available date fields: %v\n", dateFields)
 	}
 
 	// Define priority order for timestamp fields based on log type
@@ -175,35 +243,65 @@ func (c *Client) detectTimestampField(fieldTypes map[string]string, availableFie
 		}
 	}
 
+	if c.config.Verbose {
+		logger.Tracef(" Timestamp candidates for %s: %v\n", logType, timestampCandidates)
+	}
+
 	// Check each candidate
 	for _, candidate := range timestampCandidates {
 		if fieldMap[candidate] {
 			// Verify field type is date if we have type information
 			if fieldType, exists := fieldTypes[candidate]; exists {
+				if c.config.Verbose {
+					logger.Tracef(" Checking candidate '%s': field type is '%s'\n", candidate, fieldType)
+				}
 				if fieldType == "date" {
+					if c.config.Verbose {
+						logger.Tracef(" Selected timestamp field: %s (verified date type)\n", candidate)
+					}
 					return candidate, true
 				}
 			} else {
 				// If no type info, assume it's valid if field exists
+				if c.config.Verbose {
+					logger.Tracef(" Selected timestamp field: %s (field exists, no type info)\n", candidate)
+				}
 				return candidate, true
 			}
+		} else {
+			if c.config.Debug {
+				logger.Tracef(" Candidate '%s' not found in available fields\n", candidate)
+			}
 		}
+	}
+
+	if c.config.Verbose {
+		logger.Tracef(" No priority timestamp candidates found, checking fallback date fields\n")
 	}
 
 	// Check for any date field as fallback
 	for field, fieldType := range fieldTypes {
 		if fieldType == "date" {
+			if c.config.Verbose {
+				logger.Tracef(" Using fallback date field: %s\n", field)
+			}
 			return field, true
 		}
 	}
 
 	// No date field found, return default based on type
+	var defaultField string
 	switch logType {
 	case "jaeger":
-		return "startTimeMillis", false
+		defaultField = "startTimeMillis"
 	default:
-		return "@timestamp", false
+		defaultField = "@timestamp"
 	}
+
+	if c.config.Verbose {
+		logger.Tracef(" No timestamp field found, using default: %s (not verified to exist)\n", defaultField)
+	}
+	return defaultField, false
 }
 
 // extractTypesFromProperties recursively extracts field types from OpenSearch mapping

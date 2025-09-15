@@ -209,7 +209,7 @@ func (c *Client) createIndexWithMappings(ctx context.Context, osClient *opensear
 	}
 
 	if c.config.Debug {
-		logger.Infof("DEBUG: Creating index %s with definition:\n%s\n", indexName, string(reqBody))
+		logger.Tracef("Creating index %s with definition:\n%s\n", indexName, string(reqBody))
 	}
 
 	res, err = osClient.Indices.Create(
@@ -286,7 +286,7 @@ func (c *Client) bulkImport(ctx context.Context, osClient *opensearch.Client, in
 		if err := json.NewDecoder(res.Body).Decode(&bulkResponse); err == nil {
 			if errors, hasErrors := bulkResponse["errors"].(bool); hasErrors && errors {
 				if c.config.Debug {
-					logger.Infof("DEBUG: Some documents failed to import in this batch\n")
+					logger.Tracef("Some documents failed to import in this batch\n")
 				}
 			}
 		}
@@ -316,7 +316,7 @@ func (c *Client) PreprocessDocument(doc map[string]interface{}) map[string]inter
 		if key == "provided_name" || key == "uid" || key == "version" {
 			continue
 		}
-		
+
 		// Check if field name ends with @json or @input
 		if strings.HasSuffix(key, "@json") || strings.HasSuffix(key, "@input") {
 			// Only attempt to unmarshal string values

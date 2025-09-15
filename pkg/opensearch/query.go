@@ -218,6 +218,19 @@ func AddFiltersToQuery(query string, constraints []FilterConstraint) (string, er
 	}
 }
 
+// AddMultiFieldFiltersToQuery adds multi-field filter constraints to a query (both JSON and Lucene)
+func AddMultiFieldFiltersToQuery(query string, constraints []MultiFieldConstraint) (string, error) {
+	if len(constraints) == 0 {
+		return query, nil
+	}
+
+	if IsJSONQuery(query) {
+		return addMultiFieldFiltersToJSONQuery(query, constraints)
+	} else {
+		return addMultiFieldFiltersToLuceneQuery(query, constraints)
+	}
+}
+
 // addFiltersToJSONQuery adds filter constraints to a JSON query
 func addFiltersToJSONQuery(jsonQuery string, constraints []FilterConstraint) (string, error) {
 	var query map[string]interface{}
@@ -318,6 +331,92 @@ func addFiltersToLuceneQuery(luceneQuery string, constraints []FilterConstraint)
 		escapedValue := escapeQueryValue(constraint.Value)
 		terms = append(terms, fmt.Sprintf("%s:%s", constraint.Field, escapedValue))
 	}
+
+	return strings.Join(terms, " AND "), nil
+}
+
+// addMultiFieldFiltersToJSONQuery adds multi-field filter constraints to a JSON query
+func addMultiFieldFiltersToJSONQuery(jsonQuery string, constraints []MultiFieldConstraint) (string, error) {
+	var query map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonQuery), &query); err != nil {
+		return "", fmt.Errorf("failed to parse JSON query: %w", err)
+	}
+
+	// Create filter terms for each constraint
+	var filterTerms []interface{}
+	for _, constraint := range constraints {
+		if len(constraint.Fields) == 1 {
+			// Single field - use term query
+			filterTerms = append(filterTerms, map[string]interface{}{
+				"term": map[string]interface{}{
+					constraint.Fields[0]: constraint.Value,
+				},
+			})
+		} else if len(constraint.Fields) > 1 {
+			// Multiple fields - use bool/should query (OR logic)
+			var shouldTerms []interface{}
+			for _, field := range constraint.Fields {
+				shouldTerms = append(shouldTerms, map[string]interface{}{
+					"term": map[string]interface{}{
+						field: constraint.Value,
+					},
+				})
+			}
+			filterTerms = append(filterTerms, map[string]interface{}{
+				"bool": map[string]interface{}{
+					"should":               shouldTerms,
+					"minimum_should_match": 1,
+				},
+			})
+		}
+	}
+
+	// Check if this is a complete query or just a query clause
+	if _, hasQuery := query["query"]; hasQuery {
+		// It's a complete query, merge into existing structure
+		return mergeFiltersIntoCompleteQuery(query, filterTerms)
+	} else {
+		// It's just a query clause, wrap it in a complete query structure
+		return wrapQueryClauseWithFilters(query, filterTerms)
+	}
+}
+
+// addMultiFieldFiltersToLuceneQuery adds multi-field filter constraints to a Lucene query string
+func addMultiFieldFiltersToLuceneQuery(luceneQuery string, constraints []MultiFieldConstraint) (string, error) {
+	if len(constraints) == 0 {
+		return luceneQuery, nil
+	}
+
+	var constraintTerms []string
+	for _, constraint := range constraints {
+		if len(constraint.Fields) == 1 {
+			// Single field
+			escapedValue := escapeQueryValue(constraint.Value)
+			constraintTerms = append(constraintTerms, fmt.Sprintf("%s:%s", constraint.Fields[0], escapedValue))
+		} else if len(constraint.Fields) > 1 {
+			// Multiple fields - create OR clause
+			var orTerms []string
+			for _, field := range constraint.Fields {
+				escapedValue := escapeQueryValue(constraint.Value)
+				orTerms = append(orTerms, fmt.Sprintf("%s:%s", field, escapedValue))
+			}
+			constraintTerms = append(constraintTerms, fmt.Sprintf("(%s)", strings.Join(orTerms, " OR ")))
+		}
+	}
+
+	if len(constraintTerms) == 0 {
+		return luceneQuery, nil
+	}
+
+	if luceneQuery == "*" || strings.TrimSpace(luceneQuery) == "" {
+		// Replace wildcard with constraint terms
+		return strings.Join(constraintTerms, " AND "), nil
+	}
+
+	// Add constraint terms to existing query
+	var terms []string
+	terms = append(terms, "("+luceneQuery+")")
+	terms = append(terms, constraintTerms...)
 
 	return strings.Join(terms, " AND "), nil
 }

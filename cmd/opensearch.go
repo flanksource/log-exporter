@@ -29,6 +29,7 @@ type opensearchFlags struct {
 	k8sNamespace  string
 	k8sPod        string
 	k8sDeployment string
+	k8sContainer  string
 	otelService   string
 	otelOperation string
 	sample        bool
@@ -69,11 +70,14 @@ and field names, automatic schema generation, and all clicky output formats.`,
   # Export specific fields to CSV
   log-exporter export opensearch --index logs --fields "timestamp,message,host,severity" --format csv -o logs.csv
 
-  # Use custom schema for formatting
+  # Use embedded schema for field mapping and formatting
+  log-exporter export opensearch --index logs --schema kubernetes --format html -o report.html
+
+  # Use custom schema file for formatting
   log-exporter export opensearch --index logs --schema custom-log-schema.yaml --format html -o report.html
 
-  # Filter Kubernetes logs by namespace and pod
-  log-exporter export opensearch --index "filebeat-*" --k8s-namespace "production" --k8s-pod "api-*"
+  # Filter Kubernetes logs by namespace, pod, and container
+  log-exporter export opensearch --index "filebeat-*" --k8s-namespace "production" --k8s-pod "api-*" --k8s-container "app"
 
   # Filter OpenTelemetry traces by service and operation
   log-exporter export opensearch --index "jaeger-*" --otel-service "user-service" --otel-operation "GetUser"
@@ -117,14 +121,15 @@ func init() {
 
 	// Output flags
 	flags.StringVarP(&osFlags.output, "output", "o", "logs.json", "Output file path (default: logs.json)")
-	flags.StringVar(&osFlags.schema, "schema", "", "Custom clicky schema file for formatting")
-	flags.StringVar(&osFlags.preset, "preset", "", "Use preset schema (kubernetes, jaeger, combined)")
+	flags.StringVar(&osFlags.schema, "schema", "", "Use embedded schema (kubernetes, otel, otel.http, otel.db, syslog) or custom schema file")
+	flags.StringVar(&osFlags.preset, "preset", "", "Use preset schema (kubernetes, jaeger, combined) - deprecated, use --schema instead")
 	flags.BoolVar(&osFlags.autoDetect, "auto-detect", true, "Automatically detect log type from index pattern")
 
 	// Filter flags
 	flags.StringVar(&osFlags.k8sNamespace, "k8s-namespace", "", "Filter by Kubernetes namespace")
 	flags.StringVar(&osFlags.k8sPod, "k8s-pod", "", "Filter by Kubernetes pod name")
 	flags.StringVar(&osFlags.k8sDeployment, "k8s-deployment", "", "Filter by Kubernetes deployment name")
+	flags.StringVar(&osFlags.k8sContainer, "k8s-container", "", "Filter by Kubernetes container name")
 	flags.StringVar(&osFlags.otelService, "otel-service", "", "Filter by OpenTelemetry service name")
 	flags.StringVar(&osFlags.otelOperation, "otel-operation", "", "Filter by OpenTelemetry operation name")
 
@@ -146,6 +151,7 @@ func init() {
 	opensearchCmd.RegisterFlagCompletionFunc("fields", completeFieldNames)
 	opensearchCmd.RegisterFlagCompletionFunc("format", completeFormats)
 	opensearchCmd.RegisterFlagCompletionFunc("preset", completePresets)
+	opensearchCmd.RegisterFlagCompletionFunc("schema", completeSchemas)
 }
 
 func runOpensearchExport(cmd *cobra.Command, args []string) error {
@@ -221,6 +227,7 @@ func runOpensearchExport(cmd *cobra.Command, args []string) error {
 			K8sNamespace:  osFlags.k8sNamespace,
 			K8sPod:        osFlags.k8sPod,
 			K8sDeployment: osFlags.k8sDeployment,
+			K8sContainer:  osFlags.k8sContainer,
 			OtelService:   osFlags.otelService,
 			OtelOperation: osFlags.otelOperation,
 		},
@@ -268,6 +275,7 @@ func runSampleExport(cmd *cobra.Command, args []string) error {
 			K8sNamespace:  osFlags.k8sNamespace,
 			K8sPod:        osFlags.k8sPod,
 			K8sDeployment: osFlags.k8sDeployment,
+			K8sContainer:  osFlags.k8sContainer,
 			OtelService:   osFlags.otelService,
 			OtelOperation: osFlags.otelOperation,
 		},
@@ -364,5 +372,22 @@ func completePresets(cmd *cobra.Command, args []string, toComplete string) ([]st
 		"tracing",
 		"combined",
 		"both",
+	}, cobra.ShellCompDirectiveDefault
+}
+
+func completeSchemas(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// First try to get embedded clicky schemas
+	schemas, err := opensearch.ListEmbeddedClickySchemas()
+	if err == nil && len(schemas) > 0 {
+		return schemas, cobra.ShellCompDirectiveDefault
+	}
+
+	// Fallback to hardcoded list if embedded schemas can't be loaded
+	return []string{
+		"kubernetes",
+		"otel",
+		"otel.http",
+		"otel.db",
+		"syslog",
 	}, cobra.ShellCompDirectiveDefault
 }

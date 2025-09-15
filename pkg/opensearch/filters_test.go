@@ -1,6 +1,7 @@
 package opensearch
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -16,18 +17,18 @@ func TestGetFieldMappings(t *testing.T) {
 			logType: "kubernetes",
 			availableFields: []string{
 				"kubernetes.namespace",
+				"tags.kubernetes@namespace",
 				"kubernetes.pod.name",
 				"kubernetes.deployment.name",
-				"kubernetes.labels.app",
 				"serviceName",
 				"operationName",
 			},
 			expectedMapping: &FieldMapping{
-				Namespace:  "kubernetes.namespace",
-				Pod:        "kubernetes.pod.name",
-				Deployment: "kubernetes.deployment.name",
-				Service:    "serviceName",
-				Operation:  "operationName",
+				Namespace:  []string{"kubernetes.namespace", "tags.kubernetes@namespace"},
+				Pod:        []string{"kubernetes.pod.name"},
+				Deployment: []string{"kubernetes.deployment.name"},
+				Service:    []string{"serviceName"},
+				Operation:  []string{"operationName"},
 			},
 		},
 		{
@@ -40,10 +41,10 @@ func TestGetFieldMappings(t *testing.T) {
 				"kubernetes.pod.name",
 			},
 			expectedMapping: &FieldMapping{
-				Service:   "serviceName",
-				Operation: "operationName",
-				Namespace: "kubernetes.namespace",
-				Pod:       "kubernetes.pod.name",
+				Service:   []string{"serviceName"},
+				Operation: []string{"operationName"},
+				Namespace: []string{"kubernetes.namespace"},
+				Pod:       []string{"kubernetes.pod.name"},
 			},
 		},
 		{
@@ -53,29 +54,30 @@ func TestGetFieldMappings(t *testing.T) {
 				"namespace",
 				"pod",
 				"service",
+				"kubernetes.namespace",
+				"tags.kubernetes@namespace",
 				"operation",
 			},
 			expectedMapping: &FieldMapping{
-				Namespace: "namespace",
-				Pod:       "pod",
-				Service:   "service",
-				Operation: "operation",
+				Namespace: []string{"namespace", "kubernetes.namespace", "tags.kubernetes@namespace"},
+				Pod:       []string{"pod"},
+				Service:   []string{"service"},
+				Operation: []string{"operation"},
 			},
 		},
 		{
 			name:    "kubernetes logs with alternative field names",
 			logType: "kubernetes",
 			availableFields: []string{
-				"kubernetes.labels.app",
 				"kubernetes.pod",
 				"namespace",
 				"service.name",
 			},
 			expectedMapping: &FieldMapping{
-				Namespace:  "namespace",
-				Pod:        "kubernetes.pod",
-				Deployment: "kubernetes.labels.app",
-				Service:    "service.name",
+				Namespace:  []string{"namespace"},
+				Pod:        []string{"kubernetes.pod"},
+				Deployment: nil,
+				Service:    []string{"service.name"},
 			},
 		},
 		{
@@ -95,11 +97,28 @@ func TestGetFieldMappings(t *testing.T) {
 				"operationName",
 			},
 			expectedMapping: &FieldMapping{
-				Namespace:  "kubernetes_namespace_name",
-				Pod:        "kubernetes_pod_name",
-				Deployment: "kubernetes_deployment_name",
-				Service:    "serviceName",
-				Operation:  "operationName",
+				Namespace:  []string{"kubernetes_namespace_name"},
+				Pod:        []string{"kubernetes_pod_name"},
+				Deployment: []string{"kubernetes_deployment_name"},
+				Service:    []string{"serviceName"},
+				Operation:  []string{"operationName"},
+			},
+		},
+		{
+			name:    "process fields with serviceName",
+			logType: "jaeger",
+			availableFields: []string{
+				"process.serviceName",
+				"process.tag.k8s@namespace@name",
+				"process.tag.k8s@pod@name",
+				"operationName",
+				"traceID",
+			},
+			expectedMapping: &FieldMapping{
+				Service:   []string{"process.serviceName"},
+				Operation: []string{"operationName"},
+				Namespace: []string{"process.tag.k8s@namespace@name"},
+				Pod:       []string{"process.tag.k8s@pod@name"},
 			},
 		},
 	}
@@ -108,20 +127,20 @@ func TestGetFieldMappings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := GetFieldMappings(tt.logType, tt.availableFields)
 
-			if result.Namespace != tt.expectedMapping.Namespace {
-				t.Errorf("Namespace: got %q, want %q", result.Namespace, tt.expectedMapping.Namespace)
+			if !reflect.DeepEqual(result.Namespace, tt.expectedMapping.Namespace) {
+				t.Errorf("Namespace: got %v, want %v", result.Namespace, tt.expectedMapping.Namespace)
 			}
-			if result.Pod != tt.expectedMapping.Pod {
-				t.Errorf("Pod: got %q, want %q", result.Pod, tt.expectedMapping.Pod)
+			if !reflect.DeepEqual(result.Pod, tt.expectedMapping.Pod) {
+				t.Errorf("Pod: got %v, want %v", result.Pod, tt.expectedMapping.Pod)
 			}
-			if result.Deployment != tt.expectedMapping.Deployment {
-				t.Errorf("Deployment: got %q, want %q", result.Deployment, tt.expectedMapping.Deployment)
+			if !reflect.DeepEqual(result.Deployment, tt.expectedMapping.Deployment) {
+				t.Errorf("Deployment: got %v, want %v", result.Deployment, tt.expectedMapping.Deployment)
 			}
-			if result.Service != tt.expectedMapping.Service {
-				t.Errorf("Service: got %q, want %q", result.Service, tt.expectedMapping.Service)
+			if !reflect.DeepEqual(result.Service, tt.expectedMapping.Service) {
+				t.Errorf("Service: got %v, want %v", result.Service, tt.expectedMapping.Service)
 			}
-			if result.Operation != tt.expectedMapping.Operation {
-				t.Errorf("Operation: got %q, want %q", result.Operation, tt.expectedMapping.Operation)
+			if !reflect.DeepEqual(result.Operation, tt.expectedMapping.Operation) {
+				t.Errorf("Operation: got %v, want %v", result.Operation, tt.expectedMapping.Operation)
 			}
 		})
 	}
@@ -142,9 +161,9 @@ func TestBuildFilterConstraints(t *testing.T) {
 				K8sDeployment: "api-deployment",
 			},
 			mapping: &FieldMapping{
-				Namespace:  "kubernetes.namespace",
-				Pod:        "kubernetes.pod.name",
-				Deployment: "kubernetes.deployment.name",
+				Namespace:  []string{"kubernetes.namespace"},
+				Pod:        []string{"kubernetes.pod.name"},
+				Deployment: []string{"kubernetes.deployment.name"},
 			},
 			expectedConstraints: []FilterConstraint{
 				{Field: "kubernetes.namespace", Value: "production"},
@@ -159,8 +178,8 @@ func TestBuildFilterConstraints(t *testing.T) {
 				OtelOperation: "GetUser",
 			},
 			mapping: &FieldMapping{
-				Service:   "serviceName",
-				Operation: "operationName",
+				Service:   []string{"serviceName"},
+				Operation: []string{"operationName"},
 			},
 			expectedConstraints: []FilterConstraint{
 				{Field: "serviceName", Value: "user-service"},
@@ -175,7 +194,7 @@ func TestBuildFilterConstraints(t *testing.T) {
 			},
 			mapping: &FieldMapping{
 				// No namespace or service mappings
-				Pod: "kubernetes.pod.name",
+				Pod: []string{"kubernetes.pod.name"},
 			},
 			expectedConstraints: []FilterConstraint{}, // No constraints because no fields mapped
 		},
@@ -188,8 +207,8 @@ func TestBuildFilterConstraints(t *testing.T) {
 				OtelOperation: "Validate",
 			},
 			mapping: &FieldMapping{
-				Namespace: "kubernetes.namespace",
-				Operation: "operationName",
+				Namespace: []string{"kubernetes.namespace"},
+				Operation: []string{"operationName"},
 				// No pod or service mappings
 			},
 			expectedConstraints: []FilterConstraint{
@@ -247,8 +266,8 @@ func TestValidateFilters(t *testing.T) {
 				OtelService:  "user-service",
 			},
 			mapping: &FieldMapping{
-				Namespace: "kubernetes.namespace",
-				Service:   "serviceName",
+				Namespace: []string{"kubernetes.namespace"},
+				Service:   []string{"serviceName"},
 			},
 			logType:          "kubernetes",
 			availableFields:  []string{"kubernetes.namespace", "serviceName"},
@@ -263,7 +282,7 @@ func TestValidateFilters(t *testing.T) {
 				OtelOperation: "GetUser",
 			},
 			mapping: &FieldMapping{
-				Namespace: "kubernetes.namespace",
+				Namespace: []string{"kubernetes.namespace"},
 				// Missing: Pod, Service, Operation mappings
 			},
 			logType: "kubernetes",

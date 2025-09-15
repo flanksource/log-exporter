@@ -106,8 +106,8 @@ func (c *Client) Export(opts ExportOptions) error {
 	indexInfo, err := c.InspectIndex(opts.Index)
 	if err != nil {
 		if c.config.Verbose {
-			logger.Infof("Warning: Failed to inspect index '%s': %v\n", opts.Index, err)
-			logger.Infof("Falling back to default settings\n")
+			logger.Debugf("Warning: Failed to inspect index '%s': %v\n", opts.Index, err)
+			logger.Debugf("Falling back to default settings\n")
 		}
 		// Create fallback index info
 		indexInfo = &IndexInfo{
@@ -119,16 +119,12 @@ func (c *Client) Export(opts ExportOptions) error {
 	}
 
 	if c.config.Verbose {
-		logger.Infof("Index inspection results:\n")
-		logger.Infof("  Type: %s\n", indexInfo.Type)
-		logger.Infof("  Timestamp field: %s\n", indexInfo.TimestampField)
-		logger.Infof("  Available fields: %d\n", len(indexInfo.AvailableFields))
 
 		warnings := indexInfo.ValidateIndexInfo()
 		if len(warnings) > 0 {
-			logger.Infof("  Warnings:\n")
+			logger.Debugf("  Warnings:\n")
 			for _, warning := range warnings {
-				logger.Infof("    - %s\n", warning)
+				logger.Debugf("    - %s\n", warning)
 			}
 		}
 	}
@@ -143,34 +139,54 @@ func (c *Client) Export(opts ExportOptions) error {
 		logger.Infof("Time range: %s to %s\n", fromTime, toTime)
 	}
 
-	// Step 3: Process filters if any are specified
-	var filterConstraints []FilterConstraint
-	if opts.Filters.HasActiveFilters() {
-		// Get field mappings for this log type
-		fieldMapping := GetFieldMappings(indexInfo.Type, indexInfo.AvailableFields)
-
-		// Debug output for field mappings
-		if c.config.Debug {
-			logger.Infof("DEBUG: Field mappings for log type '%s':\n", indexInfo.Type)
-			if fieldMapping.Namespace != "" {
-				logger.Infof("DEBUG:   Namespace: %s\n", fieldMapping.Namespace)
+	// Step 3: Get field mappings for this log type, using embedded clicky schema if specified
+	var fieldMapping *FieldMapping
+	if opts.Schema != "" {
+		if embeddedSchema, err := LoadEmbeddedClickySchema(opts.Schema); err == nil {
+			// Resolve schema fields to actual field names
+			resolvedSchema := ResolveSchemaFields(embeddedSchema, indexInfo.AvailableFields)
+			fieldMapping = GetFieldMappingFromSchema(resolvedSchema)
+			if c.config.Verbose {
+				logger.Infof("Using embedded clicky schema '%s' for field mapping\n", opts.Schema)
 			}
-			if fieldMapping.Pod != "" {
-				logger.Infof("DEBUG:   Pod: %s\n", fieldMapping.Pod)
-			}
-			if fieldMapping.Deployment != "" {
-				logger.Infof("DEBUG:   Deployment: %s\n", fieldMapping.Deployment)
-			}
-			if fieldMapping.Service != "" {
-				logger.Infof("DEBUG:   Service: %s\n", fieldMapping.Service)
-			}
-			if fieldMapping.Operation != "" {
-				logger.Infof("DEBUG:   Operation: %s\n", fieldMapping.Operation)
-			}
+		} else {
+			// Fallback to pattern-based mapping
+			fieldMapping = GetFieldMappings(indexInfo.Type, indexInfo.AvailableFields)
 		}
+	} else {
+		// Use pattern-based mapping
+		fieldMapping = GetFieldMappings(indexInfo.Type, indexInfo.AvailableFields)
+	}
+
+	// Debug output for field mappings
+	if c.config.Debug {
+		logger.Tracef("Field mappings for log type '%s':\n", indexInfo.Type)
+		if len(fieldMapping.Namespace) > 0 {
+			logger.Tracef("  Namespace: %v\n", fieldMapping.Namespace)
+		}
+		if len(fieldMapping.Pod) > 0 {
+			logger.Tracef("  Pod: %v\n", fieldMapping.Pod)
+		}
+		if len(fieldMapping.Deployment) > 0 {
+			logger.Tracef("  Deployment: %v\n", fieldMapping.Deployment)
+		}
+		if len(fieldMapping.Container) > 0 {
+			logger.Tracef("  Container: %v\n", fieldMapping.Container)
+		}
+		if len(fieldMapping.Service) > 0 {
+			logger.Tracef("  Service: %v\n", fieldMapping.Service)
+		}
+		if len(fieldMapping.Operation) > 0 {
+			logger.Tracef("  Operation: %v\n", fieldMapping.Operation)
+		}
+	}
+
+	// Step 4: Process filters if any are specified
+	var filterConstraints []MultiFieldConstraint
+	if opts.Filters.HasActiveFilters() {
 
 		// Build filter constraints
-		filterConstraints = BuildFilterConstraints(opts.Filters, fieldMapping)
+		filterConstraints = BuildMultiFieldConstraints(opts.Filters, fieldMapping)
 
 		// Show warnings for filters that couldn't be applied
 		warnings := ValidateFilters(opts.Filters, fieldMapping, indexInfo.Type, indexInfo.AvailableFields)
@@ -184,12 +200,12 @@ func (c *Client) Export(opts ExportOptions) error {
 		if c.config.Verbose && len(filterConstraints) > 0 {
 			logger.Infof("Applied filters:\n")
 			for _, constraint := range filterConstraints {
-				logger.Infof("  - %s: %s\n", constraint.Field, constraint.Value)
+				logger.Infof("  - %s: %s (fields: %v)\n", constraint.Name, constraint.Value, constraint.Fields)
 			}
 		}
 	}
 
-	// Step 4: Build OpenSearch query with detected timestamp field and filters
+	// Step 5: Build OpenSearch query with detected timestamp field and filters
 	query, err := c.buildQueryWithFilters(opts, indexInfo.TimestampField, fromTime, toTime, filterConstraints)
 	if err != nil {
 		return fmt.Errorf("failed to build query: %w", err)
@@ -214,7 +230,7 @@ func (c *Client) Export(opts ExportOptions) error {
 	useScroll := opts.Scroll.Enabled && opts.Limit > scrollThreshold
 
 	if c.config.Debug {
-		logger.Infof("DEBUG: Limit: %d, Scroll enabled: %v, Use scroll: %v\n", opts.Limit, opts.Scroll.Enabled, useScroll)
+		logger.Tracef("Limit: %d, Scroll enabled: %v, Use scroll: %v\n", opts.Limit, opts.Scroll.Enabled, useScroll)
 	}
 
 	var result *logs.LogResult
@@ -241,23 +257,35 @@ func (c *Client) Export(opts ExportOptions) error {
 	}
 
 	// Convert to exportable data structure
-	data, err := c.convertLogsToData(result.Logs, opts.Fields)
+	data, err := c.convertLogsToData(result.Logs, opts.Fields, fieldMapping)
 	if err != nil {
 		return fmt.Errorf("failed to convert logs: %w", err)
 	}
 
-	// Generate schema based on priority: custom schema > preset > auto-detect > mapping-based
+	// Generate schema based on priority: embedded clicky schema > custom schema file > preset > auto-detect > mapping-based
 	var schema *api.PrettyObject
 	if opts.Schema != "" {
-		// Load custom schema file
-		parser := api.NewStructParser()
-		loadedSchema, err := parser.LoadSchemaFromYAML(opts.Schema)
-		if err != nil {
-			return fmt.Errorf("failed to load schema: %w", err)
+		// First try to load as embedded clicky schema
+		if embeddedSchema, err := LoadEmbeddedClickySchema(opts.Schema); err == nil {
+			// Resolve field names and use the resolved schema
+			schema = ResolveSchemaFields(embeddedSchema, indexInfo.AvailableFields)
+			if c.config.Verbose {
+				logger.Infof("Using embedded clicky schema: %s\n", opts.Schema)
+			}
+		} else {
+			// Try to load as custom schema file
+			parser := api.NewStructParser()
+			loadedSchema, err := parser.LoadSchemaFromYAML(opts.Schema)
+			if err != nil {
+				return fmt.Errorf("schema '%s' not found as embedded schema or file: %w", opts.Schema, err)
+			}
+			schema = loadedSchema
 		}
-		schema = loadedSchema
 	} else if opts.Preset != "" {
-		// Use preset schema
+		// Use preset schema (deprecated)
+		if c.config.Verbose {
+			logger.Infof("Warning: --preset is deprecated, use --schema instead\n")
+		}
 		schema, err = c.getPresetSchema(opts.Preset)
 		if err != nil {
 			return fmt.Errorf("failed to get preset schema: %w", err)
@@ -287,12 +315,12 @@ func (c *Client) Export(opts ExportOptions) error {
 	return c.formatOutput(data, schema, opts)
 }
 
-func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromTime, toTime string, filterConstraints []FilterConstraint) (string, error) {
+func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromTime, toTime string, filterConstraints []MultiFieldConstraint) (string, error) {
 	// Debug output for filter constraints
 	if c.config.Debug && len(filterConstraints) > 0 {
-		logger.Infof("DEBUG: Filter constraints being applied:\n")
+		logger.Tracef("Filter constraints being applied:\n")
 		for i, constraint := range filterConstraints {
-			logger.Infof("DEBUG:   [%d] Field: %s, Value: %s\n", i+1, constraint.Field, constraint.Value)
+			logger.Tracef("  [%d] Name: %s, Value: %s, Fields: %v\n", i+1, constraint.Name, constraint.Value, constraint.Fields)
 		}
 	}
 
@@ -302,7 +330,7 @@ func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromT
 			logger.Infof("Detected JSON query, processing as OpenSearch Query DSL\n")
 		}
 		if c.config.Debug {
-			logger.Infof("DEBUG: Original user query: %s\n", opts.Query)
+			logger.Tracef("Original user query: %s\n", opts.Query)
 		}
 
 		// Validate the JSON query
@@ -333,7 +361,7 @@ func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromT
 		}
 
 		// Apply filters
-		finalQuery, err = AddFiltersToQuery(finalQuery, filterConstraints)
+		finalQuery, err = AddMultiFieldFiltersToQuery(finalQuery, filterConstraints)
 		if err != nil {
 			return "", fmt.Errorf("failed to add filters to JSON query: %w", err)
 		}
@@ -438,7 +466,7 @@ func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromT
 
 	// Apply filters to the constructed query
 	finalQuery := string(queryBytes)
-	finalQuery, err = AddFiltersToQuery(finalQuery, filterConstraints)
+	finalQuery, err = AddMultiFieldFiltersToQuery(finalQuery, filterConstraints)
 	if err != nil {
 		return "", fmt.Errorf("failed to add filters to Lucene query: %w", err)
 	}
@@ -446,7 +474,7 @@ func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromT
 	return finalQuery, nil
 }
 
-func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string) (interface{}, error) {
+func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fieldMapping *FieldMapping) (interface{}, error) {
 	var data []map[string]interface{}
 
 	for _, logLine := range logLines {
@@ -456,10 +484,17 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string) (i
 		// This preserves the original field names from OpenSearch
 		if logLine.Labels != nil {
 			for k, v := range logLine.Labels {
+				// Parse epoch millisecond timestamps and store as readable timestamp
+				if strings.HasSuffix(strings.ToLower(k), "millis") {
+					// Try parsing as millisecond epoch and convert to timestamp
+					if parsedTime := api.ParseEpoch(v); parsedTime != nil {
+						entry["timestamp"] = parsedTime.Format(time.RFC3339)
+					}
+				}
 				entry[k] = v
 			}
 		}
-		
+
 		// Add core fields only if not already present from labels
 		// and only if no specific fields are requested (preserve raw data when fields are specified)
 		if len(fields) == 0 {
@@ -492,6 +527,69 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string) (i
 			if logLine.Count > 1 {
 				if _, exists := entry["count"]; !exists {
 					entry["count"] = logLine.Count
+				}
+			}
+		}
+
+		// Add canonical field names if field mapping is provided
+		if fieldMapping != nil {
+			// Add namespace canonical field
+			if len(fieldMapping.Namespace) > 0 {
+				for _, field := range fieldMapping.Namespace {
+					if value, exists := entry[field]; exists && value != nil && value != "" {
+						entry["namespace"] = value
+						break
+					}
+				}
+			}
+
+			// Add pod canonical field
+			if len(fieldMapping.Pod) > 0 {
+				for _, field := range fieldMapping.Pod {
+					if value, exists := entry[field]; exists && value != nil && value != "" {
+						entry["pod"] = value
+						break
+					}
+				}
+			}
+
+			// Add deployment canonical field
+			if len(fieldMapping.Deployment) > 0 {
+				for _, field := range fieldMapping.Deployment {
+					if value, exists := entry[field]; exists && value != nil && value != "" {
+						entry["deployment"] = value
+						break
+					}
+				}
+			}
+
+			// Add container canonical field
+			if len(fieldMapping.Container) > 0 {
+				for _, field := range fieldMapping.Container {
+					if value, exists := entry[field]; exists && value != nil && value != "" {
+						entry["container"] = value
+						break
+					}
+				}
+			}
+
+			// Add service canonical field
+			if len(fieldMapping.Service) > 0 {
+				for _, field := range fieldMapping.Service {
+					if value, exists := entry[field]; exists && value != nil && value != "" {
+						entry["service"] = value
+						break
+					}
+				}
+			}
+
+			// Add operation canonical field
+			if len(fieldMapping.Operation) > 0 {
+				for _, field := range fieldMapping.Operation {
+					if value, exists := entry[field]; exists && value != nil && value != "" {
+						entry["operation"] = value
+						break
+					}
 				}
 			}
 		}
@@ -636,18 +734,18 @@ func (c *Client) formatOutput(data interface{}, schema *api.PrettyObject, opts E
 	if opts.Output != "" && strings.HasSuffix(strings.ToLower(opts.Output), ".json") {
 		format = "json"
 	}
-	
+
 	if format == "json" {
 		// Use standard JSON encoder without HTML escaping for clean output
 		var buf bytes.Buffer
 		encoder := json.NewEncoder(&buf)
 		encoder.SetEscapeHTML(false)
 		encoder.SetIndent("", "  ")
-		
+
 		if err := encoder.Encode(data); err != nil {
 			return fmt.Errorf("failed to marshal JSON: %w", err)
 		}
-		
+
 		return os.WriteFile(opts.Output, buf.Bytes(), 0644)
 	} else if format == "yaml" || (opts.Output != "" && strings.HasSuffix(strings.ToLower(opts.Output), ".yaml")) {
 		yamlData, err := yaml.Marshal(data)
@@ -749,7 +847,7 @@ func (c *Client) wrapSchemaInContainer(logSchema *api.PrettyObject) *api.PrettyO
 // printFormattedQuery prints the query in a formatted JSON structure for debugging
 func (c *Client) printFormattedQuery(query string) {
 	if query == "" {
-		logger.Infof("DEBUG: Empty query\n")
+		logger.Tracef("Empty query\n")
 		return
 	}
 
@@ -757,18 +855,18 @@ func (c *Client) printFormattedQuery(query string) {
 	var jsonQuery map[string]interface{}
 	if err := json.Unmarshal([]byte(query), &jsonQuery); err != nil {
 		// If it's not JSON (e.g., Lucene query), just print as-is
-		logger.Infof("DEBUG: Query (Lucene): %s\n", query)
+		logger.Tracef("Query (Lucene): %s\n", query)
 		return
 	}
 
 	// Pretty print the JSON
-	prettyBytes, err := json.MarshalIndent(jsonQuery, "DEBUG: ", "  ")
+	prettyBytes, err := json.MarshalIndent(jsonQuery, " ", "  ")
 	if err != nil {
-		logger.Infof("DEBUG: Query (raw): %s\n", query)
+		logger.Tracef("Query (raw): %s\n", query)
 		return
 	}
 
-	logger.Infof("DEBUG: Query (formatted JSON):\n%s\n", string(prettyBytes))
+	logger.Tracef("Query (formatted JSON):\n%s\n", string(prettyBytes))
 }
 
 // performScrollSearch executes a scroll search for large result sets
@@ -787,7 +885,7 @@ func (c *Client) performScrollSearch(searcher *dutyOS.Searcher, opts ExportOptio
 	}
 
 	if c.config.Debug {
-		logger.Infof("DEBUG: Starting scroll search with size=%d, timeout=%v\n", scrollSize, scrollTimeout)
+		logger.Tracef("Starting scroll search with size=%d, timeout=%v\n", scrollSize, scrollTimeout)
 	}
 
 	// Create scroll request
@@ -819,7 +917,7 @@ func (c *Client) performScrollSearch(searcher *dutyOS.Searcher, opts ExportOptio
 	}()
 
 	if c.config.Debug {
-		logger.Infof("DEBUG: Initial scroll returned %d documents, scroll_id: %s\n", len(initialResult.Logs), scrollID[:20]+"...")
+		logger.Tracef("Initial scroll returned %d documents, scroll_id: %s\n", len(initialResult.Logs), scrollID[:20]+"...")
 	}
 
 	// Collect all results
@@ -843,7 +941,7 @@ func (c *Client) performScrollSearch(searcher *dutyOS.Searcher, opts ExportOptio
 		}
 
 		if c.config.Debug {
-			logger.Infof("DEBUG: Scroll next returned %d documents\n", len(nextResult.Logs))
+			logger.Tracef("Scroll next returned %d documents\n", len(nextResult.Logs))
 		}
 
 		// Add results, but respect the limit

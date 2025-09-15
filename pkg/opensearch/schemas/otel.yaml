@@ -1,0 +1,59 @@
+fields:
+  - format: table
+    label: Logs
+    name: logs
+    table_options:
+      fields:
+        - format: date
+          label: Timestamp
+          name: timestamp
+          style: text-gray-500 text-sm font-mono
+          type: string
+        - label: Namespace
+          name: namespace
+          style: bg-purple-100 text-purple-800 px-2 py-1 rounded font-medium text-sm
+          type: string
+        - label: Pod
+          name: pod
+          style: text-blue-600 font-mono text-sm
+          type: string
+        - label: Container
+          name: container
+          style: text-indigo-600 font-medium
+          type: string
+        - label: Service
+          name: service
+          style: text-blue-700 font-bold
+          type: string
+        - label: Operation
+          name: operation
+          style: text-indigo-600 font-medium
+          type: string
+        - color_options:
+            green: < 100000
+            orange: < 1000000
+            red: ">= 1000000"
+            yellow: < 500000
+          label: Duration (μs)
+          name: duration
+          style: text-right font-mono
+          type: duration
+        - color_options:
+            blue: CLIENT
+            green: SERVER
+            orange: CONSUMER
+            purple: INTERNAL
+            yellow: PRODUCER
+          label: Kind
+          name: span_kind
+          style: bg-gray-100 text-gray-800 px-2 py-1 rounded text-xs font-medium uppercase
+          type: string
+        - color_options:
+            green: "false"
+            red: "true"
+          label: Error
+          name: error
+          style: font-bold
+          type: boolean
+
+    type: array

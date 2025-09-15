@@ -1,0 +1,59 @@
+fields:
+- format: table
+  label: Logs
+  name: logs
+  table_options:
+    fields:
+    - date_format: "2006-01-02 15:04:05"
+      format: date
+      label: Time
+      name: timestamp
+      style: text-gray-500 text-sm font-mono
+      type: string
+    - label: Hostname
+      name: hostname
+      style: text-blue-600 font-medium
+      type: string
+    - label: Program
+      name: program
+      style: text-indigo-600 font-medium
+      type: string
+    - label: PID
+      name: pid
+      style: text-gray-500 font-mono text-sm
+      type: integer
+    - color_options:
+        blue: DEBUG|INFO
+        gray: UNKNOWN
+        green: NOTICE
+        red: ERROR|ALERT|EMERG|CRIT
+        yellow: WARNING
+      label: Severity
+      name: severity
+      style: font-bold uppercase text-xs px-2 py-1 rounded-md
+      type: string
+    - label: Facility
+      name: facility
+      style: bg-gray-100 text-gray-700 px-2 py-1 rounded text-xs font-medium
+      type: string
+    - label: Message
+      name: message
+      style: text-gray-700
+      type: string
+    - label: Tag
+      name: tag
+      style: text-purple-600 text-sm
+      type: string
+    - label: Namespace
+      name: namespace
+      style: bg-purple-100 text-purple-800 px-2 py-1 rounded font-medium text-sm
+      type: string
+    - label: Pod
+      name: pod
+      style: text-blue-600 font-mono text-sm
+      type: string
+    - label: Container
+      name: container
+      style: text-indigo-600 font-medium
+      type: string
+  type: array

@@ -486,10 +486,10 @@ func loadSampleDataFromFile(t *testing.T, ctx context.Context, client *Client, f
 	// Process each index in the sample data
 	for idxName, indexData := range sampleData.Indices {
 		indexName = idxName + "-test" // Add suffix to avoid conflicts
-		
+
 		// Create index with appropriate mappings based on the sample type
 		var mappings map[string]interface{}
-		
+
 		// Check if it's logstash or jaeger data based on fields
 		if len(indexData.Documents) > 0 {
 			doc := indexData.Documents[0]
@@ -645,7 +645,7 @@ func testLogstashDataWithFiltering(t *testing.T, ctx context.Context, client *Cl
 
 	result, err := client.performSearch(opts)
 	require.NoError(t, err, "Should be able to filter by namespace")
-	
+
 	// Verify results contain only malawi namespace
 	for _, hit := range result.Hits.Hits {
 		doc := hit.Source
@@ -664,7 +664,7 @@ func testLogstashDataWithFiltering(t *testing.T, ctx context.Context, client *Cl
 
 	result, err = client.performSearch(opts)
 	require.NoError(t, err, "Should be able to filter by log level")
-	
+
 	// Verify results contain only ERROR level
 	for _, hit := range result.Hits.Hits {
 		doc := hit.Source
@@ -686,7 +686,7 @@ func testLogstashDataWithFiltering(t *testing.T, ctx context.Context, client *Cl
 
 	result, err = client.performSearch(opts)
 	require.NoError(t, err, "Should be able to use combined filters")
-	
+
 	// Verify combined filter results
 	for _, hit := range result.Hits.Hits {
 		doc := hit.Source
@@ -717,7 +717,7 @@ func testJaegerDataWithFiltering(t *testing.T, ctx context.Context, client *Clie
 
 	result, err := client.performSearch(opts)
 	require.NoError(t, err, "Should be able to filter by service name")
-	
+
 	// Verify results contain only zimbabwe-cycle service
 	for _, hit := range result.Hits.Hits {
 		doc := hit.Source
@@ -738,7 +738,7 @@ func testJaegerDataWithFiltering(t *testing.T, ctx context.Context, client *Clie
 
 	result, err = client.performSearch(opts)
 	require.NoError(t, err, "Should be able to filter by HTTP status code")
-	
+
 	// Verify results contain only 200 status codes
 	for _, hit := range result.Hits.Hits {
 		doc := hit.Source
@@ -759,7 +759,7 @@ func testJaegerDataWithFiltering(t *testing.T, ctx context.Context, client *Clie
 
 	result, err = client.performSearch(opts)
 	require.NoError(t, err, "Should be able to filter by operation name")
-	
+
 	// Verify operation names
 	for _, hit := range result.Hits.Hits {
 		doc := hit.Source
@@ -778,7 +778,7 @@ func testJaegerDataWithFiltering(t *testing.T, ctx context.Context, client *Clie
 
 	result, err = client.performSearch(opts)
 	require.NoError(t, err, "Should be able to filter by duration range")
-	
+
 	// Verify durations
 	for _, hit := range result.Hits.Hits {
 		doc := hit.Source
@@ -814,7 +814,7 @@ func testExportWithRealSampleData(t *testing.T, ctx context.Context, client *Cli
 	// Verify exported file
 	exportedData, err := os.ReadFile(outputFile)
 	require.NoError(t, err, "Should read exported file")
-	
+
 	var exportedDocs []map[string]interface{}
 	err = json.Unmarshal(exportedData, &exportedDocs)
 	require.NoError(t, err, "Should parse exported JSON")
@@ -866,10 +866,10 @@ func testExportWithRealSampleData(t *testing.T, ctx context.Context, client *Cli
 	// Verify complex query results
 	exportedData, err = os.ReadFile(outputFile)
 	require.NoError(t, err)
-	
+
 	err = json.Unmarshal(exportedData, &exportedDocs)
 	require.NoError(t, err)
-	
+
 	for _, doc := range exportedDocs {
 		level, _ := doc["log_level"].(string)
 		namespace, _ := doc["kubernetes_namespace_name"].(string)
@@ -894,7 +894,7 @@ func testComplexFilteringScenarios(t *testing.T, ctx context.Context, client *Cl
 
 	result, err := client.performSearch(opts)
 	require.NoError(t, err, "Should filter by nested kubernetes labels")
-	
+
 	// Verify nested label filtering
 	for _, hit := range result.Hits.Hits {
 		doc := hit.Source
@@ -915,7 +915,7 @@ func testComplexFilteringScenarios(t *testing.T, ctx context.Context, client *Cl
 
 	result, err = client.performSearch(opts)
 	require.NoError(t, err, "Should filter by nested process tags")
-	
+
 	// Verify nested process tag filtering
 	for _, hit := range result.Hits.Hits {
 		doc := hit.Source
@@ -962,13 +962,13 @@ func testComplexFilteringScenarios(t *testing.T, ctx context.Context, client *Cl
 	// Verify wildcard results
 	exportedData, err := os.ReadFile(outputFile)
 	require.NoError(t, err)
-	
+
 	// Check if we have valid JSON data
 	if len(exportedData) > 2 { // More than just "[]"
 		var exportedDocs []map[string]interface{}
 		err = json.Unmarshal(exportedData, &exportedDocs)
 		require.NoError(t, err, "Failed to parse exported JSON: %s", string(exportedData))
-		
+
 		for _, doc := range exportedDocs {
 			message, _ := doc["message"].(string)
 			if message != "" {
@@ -991,14 +991,14 @@ func testComplexFilteringScenarios(t *testing.T, ctx context.Context, client *Cl
 
 	result, err = client.performSearch(opts)
 	require.NoError(t, err, "Should filter by multiple services")
-	
+
 	// Verify multi-service results
 	validServices := map[string]bool{
 		"kenya-cycle":  true,
 		"malawi-cycle": true,
 		"uganda-cycle": true,
 	}
-	
+
 	for _, hit := range result.Hits.Hits {
 		doc := hit.Source
 		if process, ok := doc["process"].(map[string]interface{}); ok {
@@ -1025,9 +1025,9 @@ func (c *Client) performSearch(opts ExportOptions) (*SearchResult, error) {
 
 	// Get field mappings
 	fieldMapping := GetFieldMappings(indexInfo.Type, indexInfo.AvailableFields)
-	
+
 	// Build filter constraints
-	filterConstraints := BuildFilterConstraints(opts.Filters, fieldMapping)
+	filterConstraints := BuildMultiFieldConstraints(opts.Filters, fieldMapping)
 
 	// Parse time range
 	fromTime, toTime := opts.From, opts.To

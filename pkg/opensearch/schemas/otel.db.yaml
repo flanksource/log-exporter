@@ -1,0 +1,77 @@
+fields:
+- format: table
+  label: Logs
+  name: logs
+  table_options:
+    fields:
+    - date_format: "15:04:05.000"
+      format: date
+      label: Start Time
+      name: start_time
+      style: text-gray-500 text-sm font-mono
+      type: string
+    - label: Trace ID
+      name: trace_id
+      style: text-purple-600 font-mono text-xs
+      type: string
+    - label: Span ID
+      name: span_id
+      style: text-blue-600 font-mono text-xs
+      type: string
+    - label: Service
+      name: service
+      style: text-blue-700 font-bold
+      type: string
+    - label: Operation
+      name: operation
+      style: text-indigo-600 font-medium
+      type: string
+    - label: DB System
+      name: db_system
+      style: bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-bold uppercase
+      type: string
+    - label: Database
+      name: db_name
+      style: text-green-700 font-medium
+      type: string
+    - label: Statement
+      name: db_statement
+      style: text-gray-600 font-mono text-sm
+      type: string
+    - label: DB Operation
+      name: db_operation
+      style: bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs font-medium uppercase
+      type: string
+    - label: DB User
+      name: db_user
+      style: text-purple-600 font-medium
+      type: string
+    - color_options:
+        green: < 100000
+        orange: < 1000000
+        red: '>= 1000000'
+        yellow: < 500000
+      label: Duration (μs)
+      name: duration
+      style: text-right font-mono
+      type: float
+    - color_options:
+        green: "false"
+        red: "true"
+      label: Error
+      name: error
+      style: font-bold
+      type: boolean
+    - label: Namespace
+      name: namespace
+      style: bg-purple-100 text-purple-800 px-2 py-1 rounded font-medium text-sm
+      type: string
+    - label: Pod
+      name: pod
+      style: text-blue-600 font-mono text-sm
+      type: string
+    - label: Container
+      name: container
+      style: text-indigo-600 font-medium
+      type: string
+  type: array

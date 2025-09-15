@@ -65,7 +65,7 @@ func TestGenerateMappingFromData(t *testing.T) {
 			},
 		},
 		{
-			name: "should handle empty documents",
+			name:  "should handle empty documents",
 			input: []map[string]interface{}{},
 			expected: map[string]interface{}{
 				"properties": map[string]interface{}{},
@@ -140,7 +140,7 @@ func TestCleanIndexDefinition(t *testing.T) {
 						"number_of_replicas": 0,
 						"provided_name":      "test-index",
 						"uid":                "test-uid",
-						"uuid":               "test-uuid", 
+						"uuid":               "test-uuid",
 						"version": map[string]interface{}{
 							"created": "136347827",
 						},
@@ -288,7 +288,7 @@ func TestPreprocessDocument(t *testing.T) {
 			name: "should remove provided_name, uid, and version attributes",
 			input: map[string]interface{}{
 				"id":            "test-id",
-				"provided_name": "test-name", 
+				"provided_name": "test-name",
 				"uid":           "test-uid",
 				"version":       "1.0",
 				"message":       "test message",
@@ -305,7 +305,7 @@ func TestPreprocessDocument(t *testing.T) {
 			input: map[string]interface{}{
 				"data@json":     `{"key": "value"}`,
 				"provided_name": "should-be-removed",
-				"uid":           "should-be-removed",  
+				"uid":           "should-be-removed",
 				"version":       "should-be-removed",
 				"normal_field":  "should-be-kept",
 			},
@@ -328,8 +328,8 @@ func TestPreprocessDocument(t *testing.T) {
 			},
 		},
 		{
-			name: "should handle empty document",
-			input: map[string]interface{}{},
+			name:     "should handle empty document",
+			input:    map[string]interface{}{},
 			expected: map[string]interface{}{},
 		},
 		{
@@ -346,7 +346,7 @@ func TestPreprocessDocument(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			result := client.PreprocessDocument(tc.input)
-			
+
 			// Check that expected keys are present
 			for key, expectedValue := range tc.expected {
 				actualValue, exists := result[key]
@@ -354,7 +354,7 @@ func TestPreprocessDocument(t *testing.T) {
 					t.Errorf("Expected key %s to be present in result", key)
 					continue
 				}
-				
+
 				// For JSON objects, do a deep comparison
 				if expectedMap, ok := expectedValue.(map[string]interface{}); ok {
 					if actualMap, ok := actualValue.(map[string]interface{}); ok {
@@ -370,14 +370,14 @@ func TestPreprocessDocument(t *testing.T) {
 					t.Errorf("For key %s, expected %v, got %v", key, expectedValue, actualValue)
 				}
 			}
-			
+
 			// Check that no extra keys are present
 			for key := range result {
 				if _, expected := tc.expected[key]; !expected {
 					t.Errorf("Unexpected key %s found in result", key)
 				}
 			}
-			
+
 			// Verify filtered attributes are not present
 			filteredKeys := []string{"provided_name", "uid", "version"}
 			for _, filteredKey := range filteredKeys {

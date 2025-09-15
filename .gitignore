@@ -4,3 +4,6 @@ hack/
 *.csv
 log-exporter*
 *.json
+*.yaml
+*.html
+
