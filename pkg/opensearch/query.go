@@ -348,7 +348,7 @@ func addMultiFieldFiltersToJSONQuery(jsonQuery string, constraints []MultiFieldC
 		if len(constraint.Fields) == 1 {
 			// Single field - use term query
 			filterTerms = append(filterTerms, map[string]interface{}{
-				"term": map[string]interface{}{
+				"match_phrase": map[string]interface{}{
 					constraint.Fields[0]: constraint.Value,
 				},
 			})
@@ -357,7 +357,7 @@ func addMultiFieldFiltersToJSONQuery(jsonQuery string, constraints []MultiFieldC
 			var shouldTerms []interface{}
 			for _, field := range constraint.Fields {
 				shouldTerms = append(shouldTerms, map[string]interface{}{
-					"term": map[string]interface{}{
+					"match_phrase": map[string]interface{}{
 						field: constraint.Value,
 					},
 				})

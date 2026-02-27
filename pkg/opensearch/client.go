@@ -1,26 +1,27 @@
 package opensearch
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/flanksource/clicky"
 	"github.com/flanksource/clicky/api"
+	"github.com/flanksource/commons/collections"
 	"github.com/flanksource/commons/logger"
 	"github.com/samber/lo"
 	"sigs.k8s.io/yaml"
 
-	dutyContext "github.com/flanksource/duty/context"
-	"github.com/flanksource/duty/logs"
-	dutyOS "github.com/flanksource/duty/logs/opensearch"
-	"github.com/flanksource/duty/types"
+	"github.com/flanksource/commons-db/context"
+	"github.com/flanksource/commons-db/logs"
+	opensearch "github.com/flanksource/commons-db/logs/opensearch"
+	"github.com/flanksource/commons-db/types"
 
 	schemaBuilder "github.com/flanksource/log-exporter/pkg/schema"
-	opensearch "github.com/opensearch-project/opensearch-go/v2"
+	opensearchv2 "github.com/opensearch-project/opensearch-go/v2"
 )
 
 type Config struct {
@@ -32,18 +33,18 @@ type Config struct {
 }
 
 type ExportOptions struct {
-	Index      string
-	Query      string
-	Fields     []string
-	From       string // Raw time string (will be parsed with datemath support)
-	To         string // Raw time string (will be parsed with datemath support)
-	Limit      int
-	Output     string
-	Schema     string
-	Preset     string
-	AutoDetect bool
-	Filters    FilterOptions
-	Scroll     ScrollConfig
+	Index        string
+	Query        string
+	Fields       []string
+	FieldAliases map[string]string // Map of original field name -> alias
+	From         string            // Raw time string (will be parsed with datemath support)
+	To           string            // Raw time string (will be parsed with datemath support)
+	Limit        int
+	Output       string
+	Schema       string
+	AutoDetect   bool
+	Filters      FilterOptions
+	Scroll       ScrollConfig
 }
 
 type ImportOptions struct {
@@ -62,22 +63,19 @@ type Client struct {
 	config Config
 }
 
-func (c *Client) GetSearcher() (*dutyOS.Searcher, error) {
+func (c *Client) GetSearcher() (*opensearch.Searcher, error) {
 
 	// Execute search using duty's OpenSearch implementation
-	backend := dutyOS.Backend{
+	backend := opensearch.Backend{
 		Address:  c.config.Host,
 		Username: lo.ToPtr(types.EnvVar{ValueStatic: c.config.Username}),
 		Password: lo.ToPtr(types.EnvVar{ValueStatic: c.config.Password}),
 	}
 
-	// Create a duty context implementation
-	dutyCtx := dutyContext.New()
-
-	return dutyOS.New(dutyCtx, backend, nil)
+	return opensearch.New(context.New(), backend, nil)
 }
 
-func (c *Client) GetClient() (*opensearch.Client, error) {
+func (c *Client) GetClient() (*opensearchv2.Client, error) {
 
 	searcher, err := c.GetSearcher()
 	if err != nil {
@@ -135,51 +133,45 @@ func (c *Client) Export(opts ExportOptions) error {
 		return fmt.Errorf("failed to parse time range: %w", err)
 	}
 
-	if c.config.Verbose && (fromTime != "" || toTime != "") {
-		logger.Infof("Time range: %s to %s\n", fromTime, toTime)
-	}
+	clicky.Debugf("Parsed time range - From: %s, To: %s\n", fromTime, toTime)
 
+	var schema *api.PrettyObject
 	// Step 3: Get field mappings for this log type, using embedded clicky schema if specified
 	var fieldMapping *FieldMapping
 	if opts.Schema != "" {
 		if embeddedSchema, err := LoadEmbeddedClickySchema(opts.Schema); err == nil {
-			// Resolve schema fields to actual field names
-			resolvedSchema := ResolveSchemaFields(embeddedSchema, indexInfo.AvailableFields)
-			fieldMapping = GetFieldMappingFromSchema(resolvedSchema)
-			if c.config.Verbose {
-				logger.Infof("Using embedded clicky schema '%s' for field mapping\n", opts.Schema)
-			}
+			schema = ResolveSchemaFields(embeddedSchema, indexInfo.AvailableFields)
 		} else {
-			// Fallback to pattern-based mapping
-			fieldMapping = GetFieldMappings(indexInfo.Type, indexInfo.AvailableFields)
+			parser := api.NewStructParser()
+			schema, err = parser.LoadSchemaFromYAML(opts.Schema)
+			if err != nil {
+				return fmt.Errorf("schema '%s' not found as embedded schema or file: %w", opts.Schema, err)
+			}
 		}
-	} else {
-		// Use pattern-based mapping
+
+	} else if opts.AutoDetect {
+		// Auto-detect schema from index pattern
+		schema, err = c.autoDetectSchema(opts.Index)
+		if err != nil {
+			clicky.Debugf("failed to auto-detect schema: %v", err)
+		} else {
+			yamlData, err := yaml.Marshal(schema)
+			if err != nil {
+				return fmt.Errorf("failed to marshal auto-detected schema to YAML: %w", err)
+			}
+			clicky.Infof("Saving auto-detected schema to %s.schema.yaml", opts.Index)
+			_ = os.WriteFile(opts.Index+".schema.yaml", yamlData, 0644)
+		}
+	}
+	if schema != nil {
+		fieldMapping = GetFieldMappingFromSchema(schema)
+	}
+
+	if fieldMapping == nil {
 		fieldMapping = GetFieldMappings(indexInfo.Type, indexInfo.AvailableFields)
 	}
 
-	// Debug output for field mappings
-	if c.config.Debug {
-		logger.Tracef("Field mappings for log type '%s':\n", indexInfo.Type)
-		if len(fieldMapping.Namespace) > 0 {
-			logger.Tracef("  Namespace: %v\n", fieldMapping.Namespace)
-		}
-		if len(fieldMapping.Pod) > 0 {
-			logger.Tracef("  Pod: %v\n", fieldMapping.Pod)
-		}
-		if len(fieldMapping.Deployment) > 0 {
-			logger.Tracef("  Deployment: %v\n", fieldMapping.Deployment)
-		}
-		if len(fieldMapping.Container) > 0 {
-			logger.Tracef("  Container: %v\n", fieldMapping.Container)
-		}
-		if len(fieldMapping.Service) > 0 {
-			logger.Tracef("  Service: %v\n", fieldMapping.Service)
-		}
-		if len(fieldMapping.Operation) > 0 {
-			logger.Tracef("  Operation: %v\n", fieldMapping.Operation)
-		}
-	}
+	clicky.Debugf("Using field mappings: %s", fieldMapping.Pretty().ANSI())
 
 	// Step 4: Process filters if any are specified
 	var filterConstraints []MultiFieldConstraint
@@ -211,14 +203,7 @@ func (c *Client) Export(opts ExportOptions) error {
 		return fmt.Errorf("failed to build query: %w", err)
 	}
 
-	if c.config.Debug || c.config.Verbose {
-		logger.Infof("Executing query: %s\n", query)
-
-		// In debug mode, show formatted JSON query for better readability
-		if c.config.Debug {
-			c.printFormattedQuery(query)
-		}
-	}
+	clicky.Debugf("%s", clicky.CodeBlock("json", query).ANSI())
 
 	searcher, err := c.GetSearcher()
 	if err != nil {
@@ -241,74 +226,28 @@ func (c *Client) Export(opts ExportOptions) error {
 		}
 	} else {
 		// Use regular search for smaller result sets
-		request := dutyOS.Request{
+		request := opensearch.Request{
 			Index: opts.Index,
 			Query: query,
 			Limit: fmt.Sprintf("%d", opts.Limit),
 		}
-		result, err = searcher.Search(dutyContext.New(), request)
+		result, err = searcher.Search(context.New(), request)
 		if err != nil {
 			return fmt.Errorf("failed to search: %w", err)
 		}
 	}
 
-	if c.config.Verbose {
-		logger.Infof("Found %d log entries\n", len(result.Logs))
-	}
+	clicky.Infof("Found %v log entries\n", clicky.Text(fmt.Sprintf("%d", len(result.Logs)), "text-green-500"))
 
 	// Convert to exportable data structure
-	data, err := c.convertLogsToData(result.Logs, opts.Fields, fieldMapping)
+	data, err := c.convertLogsToData(result.Logs, opts.Fields, opts.FieldAliases, fieldMapping)
 	if err != nil {
 		return fmt.Errorf("failed to convert logs: %w", err)
 	}
 
-	// Generate schema based on priority: embedded clicky schema > custom schema file > preset > auto-detect > mapping-based
-	var schema *api.PrettyObject
-	if opts.Schema != "" {
-		// First try to load as embedded clicky schema
-		if embeddedSchema, err := LoadEmbeddedClickySchema(opts.Schema); err == nil {
-			// Resolve field names and use the resolved schema
-			schema = ResolveSchemaFields(embeddedSchema, indexInfo.AvailableFields)
-			if c.config.Verbose {
-				logger.Infof("Using embedded clicky schema: %s\n", opts.Schema)
-			}
-		} else {
-			// Try to load as custom schema file
-			parser := api.NewStructParser()
-			loadedSchema, err := parser.LoadSchemaFromYAML(opts.Schema)
-			if err != nil {
-				return fmt.Errorf("schema '%s' not found as embedded schema or file: %w", opts.Schema, err)
-			}
-			schema = loadedSchema
-		}
-	} else if opts.Preset != "" {
-		// Use preset schema (deprecated)
-		if c.config.Verbose {
-			logger.Infof("Warning: --preset is deprecated, use --schema instead\n")
-		}
-		schema, err = c.getPresetSchema(opts.Preset)
-		if err != nil {
-			return fmt.Errorf("failed to get preset schema: %w", err)
-		}
-	} else if opts.AutoDetect {
-		// Auto-detect schema from index pattern
-		schema, err = c.autoDetectSchema(opts.Index, opts.Fields)
-		yamlData, err := yaml.Marshal(schema)
-		os.WriteFile(opts.Index+".schema.yaml", yamlData, 0644)
-		if err != nil {
-			if c.config.Verbose {
-				logger.Infof("Warning: Failed to auto-detect schema, using mapping-based: %v\n", err)
-			}
-			// Fallback to mapping-based schema
-			schema, err = c.buildMappingBasedSchema(opts.Index, opts.Fields, result.Logs)
-		}
-	} else {
-		// Auto-generate schema from OpenSearch mappings
-		schema, err = c.buildMappingBasedSchema(opts.Index, opts.Fields, result.Logs)
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to generate schema: %w", err)
+	if schema == nil {
+		clicky.MustPrint(data)
+		return nil
 	}
 
 	// Format using clicky
@@ -316,13 +255,6 @@ func (c *Client) Export(opts ExportOptions) error {
 }
 
 func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromTime, toTime string, filterConstraints []MultiFieldConstraint) (string, error) {
-	// Debug output for filter constraints
-	if c.config.Debug && len(filterConstraints) > 0 {
-		logger.Tracef("Filter constraints being applied:\n")
-		for i, constraint := range filterConstraints {
-			logger.Tracef("  [%d] Name: %s, Value: %s, Fields: %v\n", i+1, constraint.Name, constraint.Value, constraint.Fields)
-		}
-	}
 
 	// Check if this is a JSON query
 	if IsJSONQuery(opts.Query) {
@@ -348,11 +280,17 @@ func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromT
 			return "", fmt.Errorf("failed to merge time range into JSON query: %w", err)
 		}
 
-		// Add field filtering
-		finalQuery, err = AddFieldFilteringToJSON(finalQuery, opts.Fields)
-		if err != nil {
-			return "", fmt.Errorf("failed to add field filtering to JSON query: %w", err)
-		}
+		// //FIXME apply field filters / defaults / mapping on all fields in the index, and then
+		// // search on only resolved fields
+		// if len(lo.Filter(opts.Fields, func(s string, _ int) bool {
+		// 	return strings.ContainsAny(s, "!*,")
+		// })) == 0 {
+		// 	// Add field filtering
+		// 	finalQuery, err = AddFieldFilteringToJSON(finalQuery, opts.Fields)
+		// 	if err != nil {
+		// 		return "", fmt.Errorf("failed to add field filtering to JSON query: %w", err)
+		// 	}
+		// }
 
 		// Add sorting (if not already present)
 		finalQuery, err = AddSortingToJSON(finalQuery, timestampField)
@@ -368,6 +306,12 @@ func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromT
 
 		return finalQuery, nil
 	}
+
+	// //FIXME apply field filters
+	// // Add field filtering
+	// if len(opts.Fields) > 0 {
+	// 	query["_source"] = opts.Fields
+	// }
 
 	// Handle traditional Lucene query string
 	query := map[string]interface{}{
@@ -437,11 +381,6 @@ func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromT
 		)
 	}
 
-	// Add field filtering
-	if len(opts.Fields) > 0 {
-		query["_source"] = opts.Fields
-	}
-
 	// Add sorting using the detected timestamp field
 	sortParams := map[string]interface{}{
 		"order": "desc",
@@ -474,8 +413,12 @@ func (c *Client) buildQueryWithFilters(opts ExportOptions, timestampField, fromT
 	return finalQuery, nil
 }
 
-func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fieldMapping *FieldMapping) (interface{}, error) {
+func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fieldAliases map[string]string, fieldMapping *FieldMapping) (interface{}, error) {
 	var data []map[string]interface{}
+
+	if len(logLines) == 0 {
+		return data, nil
+	}
 
 	for _, logLine := range logLines {
 		entry := make(map[string]interface{})
@@ -495,39 +438,35 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fi
 			}
 		}
 
-		// Add core fields only if not already present from labels
-		// and only if no specific fields are requested (preserve raw data when fields are specified)
-		if len(fields) == 0 {
-			if _, exists := entry["id"]; !exists {
-				entry["id"] = logLine.ID
+		if _, exists := entry["id"]; !exists {
+			entry["id"] = logLine.ID
+		}
+		if _, hasTimestamp := entry["@timestamp"]; !hasTimestamp {
+			if _, hasTimestampAlt := entry["timestamp"]; !hasTimestampAlt {
+				entry["timestamp"] = logLine.FirstObserved.Format(time.RFC3339)
 			}
-			if _, hasTimestamp := entry["@timestamp"]; !hasTimestamp {
-				if _, hasTimestampAlt := entry["timestamp"]; !hasTimestampAlt {
-					entry["timestamp"] = logLine.FirstObserved.Format(time.RFC3339)
-				}
+		}
+		if _, exists := entry["message"]; !exists {
+			entry["message"] = logLine.Message
+		}
+		if logLine.Severity != "" {
+			if _, exists := entry["severity"]; !exists {
+				entry["severity"] = logLine.Severity
 			}
-			if _, exists := entry["message"]; !exists {
-				entry["message"] = logLine.Message
+		}
+		if logLine.Source != "" {
+			if _, exists := entry["source"]; !exists {
+				entry["source"] = logLine.Source
 			}
-			if logLine.Severity != "" {
-				if _, exists := entry["severity"]; !exists {
-					entry["severity"] = logLine.Severity
-				}
+		}
+		if logLine.Host != "" {
+			if _, exists := entry["host"]; !exists {
+				entry["host"] = logLine.Host
 			}
-			if logLine.Source != "" {
-				if _, exists := entry["source"]; !exists {
-					entry["source"] = logLine.Source
-				}
-			}
-			if logLine.Host != "" {
-				if _, exists := entry["host"]; !exists {
-					entry["host"] = logLine.Host
-				}
-			}
-			if logLine.Count > 1 {
-				if _, exists := entry["count"]; !exists {
-					entry["count"] = logLine.Count
-				}
+		}
+		if logLine.Count > 1 {
+			if _, exists := entry["count"]; !exists {
+				entry["count"] = logLine.Count
 			}
 		}
 
@@ -538,6 +477,7 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fi
 				for _, field := range fieldMapping.Namespace {
 					if value, exists := entry[field]; exists && value != nil && value != "" {
 						entry["namespace"] = value
+						delete(entry, field)
 						break
 					}
 				}
@@ -548,6 +488,7 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fi
 				for _, field := range fieldMapping.Pod {
 					if value, exists := entry[field]; exists && value != nil && value != "" {
 						entry["pod"] = value
+						delete(entry, field)
 						break
 					}
 				}
@@ -558,6 +499,7 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fi
 				for _, field := range fieldMapping.Deployment {
 					if value, exists := entry[field]; exists && value != nil && value != "" {
 						entry["deployment"] = value
+						delete(entry, field)
 						break
 					}
 				}
@@ -568,6 +510,7 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fi
 				for _, field := range fieldMapping.Container {
 					if value, exists := entry[field]; exists && value != nil && value != "" {
 						entry["container"] = value
+						delete(entry, field)
 						break
 					}
 				}
@@ -578,6 +521,7 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fi
 				for _, field := range fieldMapping.Service {
 					if value, exists := entry[field]; exists && value != nil && value != "" {
 						entry["service"] = value
+						delete(entry, field)
 						break
 					}
 				}
@@ -588,6 +532,7 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fi
 				for _, field := range fieldMapping.Operation {
 					if value, exists := entry[field]; exists && value != nil && value != "" {
 						entry["operation"] = value
+						delete(entry, field)
 						break
 					}
 				}
@@ -597,12 +542,23 @@ func (c *Client) convertLogsToData(logLines []*logs.LogLine, fields []string, fi
 		// Filter fields if specified
 		if len(fields) > 0 {
 			filteredEntry := make(map[string]interface{})
-			for _, field := range fields {
-				if value, exists := entry[field]; exists {
-					filteredEntry[field] = value
+
+			for k, v := range entry {
+				if matched := collections.MatchItems(k, fields...); matched {
+					filteredEntry[k] = v
 				}
 			}
 			entry = filteredEntry
+		}
+
+		// Apply field aliases
+		if len(fieldAliases) > 0 {
+			for originalField, alias := range fieldAliases {
+				if value, exists := entry[originalField]; exists {
+					entry[alias] = value
+					delete(entry, originalField)
+				}
+			}
 		}
 
 		data = append(data, entry)
@@ -730,37 +686,23 @@ func (c *Client) formatOutput(data interface{}, schema *api.PrettyObject, opts E
 	}
 
 	// Determine format based on file extension if available, otherwise use clicky's format
-	format := clicky.Flags.FormatOptions.ResolveFormat()
-	if opts.Output != "" && strings.HasSuffix(strings.ToLower(opts.Output), ".json") {
-		format = "json"
+	format := clicky.Flags.ResolveFormat()
+
+	if opts.Output == "" {
+		clicky.MustPrint(data)
+		return nil
 	}
 
-	if format == "json" {
-		// Use standard JSON encoder without HTML escaping for clean output
-		var buf bytes.Buffer
-		encoder := json.NewEncoder(&buf)
-		encoder.SetEscapeHTML(false)
-		encoder.SetIndent("", "  ")
+	o := clicky.Flags
 
-		if err := encoder.Encode(data); err != nil {
-			return fmt.Errorf("failed to marshal JSON: %w", err)
-		}
-
-		return os.WriteFile(opts.Output, buf.Bytes(), 0644)
-	} else if format == "yaml" || (opts.Output != "" && strings.HasSuffix(strings.ToLower(opts.Output), ".yaml")) {
-		yamlData, err := yaml.Marshal(data)
-		if err != nil {
-			return fmt.Errorf("failed to marshal YAML: %w", err)
-		}
-		return os.WriteFile(opts.Output, yamlData, 0644)
+	ext := filepath.Ext(opts.Output)
+	if ext == ".json" {
+		o.JSON = true
+	} else if ext == ".yaml" || ext == ".yml" {
+		o.YAML = true
 	}
-
-	err = clicky.FormatToFile(prettyData, clicky.Flags.FormatOptions, opts.Output)
-	if err != nil {
-		return fmt.Errorf("failed to format data: %w", err)
-	}
-
-	return nil
+	clicky.Infof("Saving to %s in %s format", opts.Output, format)
+	return clicky.FormatToFile(prettyData, o.FormatOptions, opts.Output)
 }
 
 // getPresetSchema returns a preset schema by name
@@ -773,17 +715,17 @@ func (c *Client) getPresetSchema(preset string) (*api.PrettyObject, error) {
 }
 
 // autoDetectSchema attempts to detect the appropriate schema from index patterns
-func (c *Client) autoDetectSchema(indexPattern string, fields []string) (*api.PrettyObject, error) {
+func (c *Client) autoDetectSchema(indexPattern string) (*api.PrettyObject, error) {
 	// Convert to lowercase for matching
 	lowerIndex := strings.ToLower(indexPattern)
+
+	clicky.Infof("Auto-detecting schema from %s", indexPattern)
 
 	// Check for Kubernetes/Filebeat patterns
 	k8sPatterns := []string{"filebeat", "kubernetes", "k8s", "eks", "gke", "aks"}
 	for _, pattern := range k8sPatterns {
 		if strings.Contains(lowerIndex, pattern) {
-			if c.config.Verbose {
-				logger.Infof("Auto-detected Kubernetes logs from index pattern: %s\n", indexPattern)
-			}
+			clicky.Infof("Detected Kubernetes logs from index pattern: %s", indexPattern)
 			return c.wrapSchemaInContainer(schemaBuilder.GetKubernetesSchema()), nil
 		}
 	}
@@ -792,9 +734,7 @@ func (c *Client) autoDetectSchema(indexPattern string, fields []string) (*api.Pr
 	jaegerPatterns := []string{"jaeger", "span", "trace", "otel", "apm"}
 	for _, pattern := range jaegerPatterns {
 		if strings.Contains(lowerIndex, pattern) {
-			if c.config.Verbose {
-				logger.Infof("Auto-detected Jaeger traces from index pattern: %s\n", indexPattern)
-			}
+			clicky.Infof("Detected Jaeger traces from index pattern: %s", indexPattern)
 			return c.wrapSchemaInContainer(schemaBuilder.GetJaegerSchema()), nil
 		}
 	}
@@ -812,10 +752,8 @@ func (c *Client) buildMappingBasedSchema(indexPattern string, fields []string, l
 	builder := schemaBuilder.NewBuilder(client)
 	logSchema, err := builder.BuildSchemaFromMapping(indexPattern, fields)
 	if err != nil {
-		// Fallback to basic schema generation from log data
-		if c.config.Verbose {
-			logger.Infof("Warning: Failed to build schema from mapping, using fallback: %v\n", err)
-		}
+		clicky.Warnf("Failed to build schema from mapping, using fallback: %v", err)
+
 		logSchema, err = c.generateSchema(logLines, fields)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate fallback schema: %w", err)
@@ -836,8 +774,8 @@ func (c *Client) wrapSchemaInContainer(logSchema *api.PrettyObject) *api.PrettyO
 				Label:  "Logs",
 				Type:   "array",
 				Format: "table",
-				TableOptions: api.PrettyTable{
-					Fields: logSchema.Fields,
+				TableOptions: api.TableOptions{
+					Columns: logSchema.Fields,
 				},
 			},
 		},
@@ -870,8 +808,8 @@ func (c *Client) printFormattedQuery(query string) {
 }
 
 // performScrollSearch executes a scroll search for large result sets
-func (c *Client) performScrollSearch(searcher *dutyOS.Searcher, opts ExportOptions, query string) (*logs.LogResult, error) {
-	ctx := dutyContext.New()
+func (c *Client) performScrollSearch(searcher *opensearch.Searcher, opts ExportOptions, query string) (*logs.LogResult, error) {
+	ctx := context.New()
 
 	// Set up scroll options with defaults
 	scrollSize := opts.Scroll.Size
@@ -889,12 +827,12 @@ func (c *Client) performScrollSearch(searcher *dutyOS.Searcher, opts ExportOptio
 	}
 
 	// Create scroll request
-	scrollReq := dutyOS.ScrollRequest{
-		Request: dutyOS.Request{
+	scrollReq := opensearch.ScrollRequest{
+		Request: opensearch.Request{
 			Index: opts.Index,
 			Query: query,
 		},
-		Scroll: dutyOS.ScrollOptions{
+		Scroll: opensearch.ScrollOptions{
 			Size:    scrollSize,
 			Timeout: scrollTimeout,
 			Enabled: true,
@@ -968,15 +906,46 @@ func (c *Client) performScrollSearch(searcher *dutyOS.Searcher, opts ExportOptio
 	}, nil
 }
 
-// ParseFields splits a comma-separated field list into a slice
-func ParseFields(fieldsStr string) []string {
+// FieldsWithAliases holds the parsed fields and their optional aliases
+type FieldsWithAliases struct {
+	Fields  []string          // Field names to select
+	Aliases map[string]string // Map of original field name -> alias
+}
+
+// ParseFields splits a comma-separated field list and extracts field:alias mappings
+// Supports syntax: "field1,field2:alias2,field3"
+// Returns both the list of fields and a map of aliases
+func ParseFields(fieldsStr string) FieldsWithAliases {
+	result := FieldsWithAliases{
+		Aliases: make(map[string]string),
+	}
+
 	if fieldsStr == "" {
-		return nil
+		return result
 	}
 
 	fields := strings.Split(fieldsStr, ",")
-	for i, field := range fields {
-		fields[i] = strings.TrimSpace(field)
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+
+		// Check if field has alias (field:alias format)
+		if strings.Contains(field, ":") {
+			parts := strings.SplitN(field, ":", 2)
+			if len(parts) == 2 {
+				originalField := strings.TrimSpace(parts[0])
+				alias := strings.TrimSpace(parts[1])
+				result.Fields = append(result.Fields, originalField)
+				if alias != "" {
+					result.Aliases[originalField] = alias
+				}
+			}
+		} else {
+			result.Fields = append(result.Fields, field)
+		}
 	}
-	return fields
+
+	return result
 }

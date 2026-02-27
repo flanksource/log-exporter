@@ -2,8 +2,11 @@ package opensearch
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/flanksource/clicky"
+	"github.com/flanksource/clicky/api"
 	"github.com/flanksource/commons/logger"
 )
 
@@ -26,6 +29,23 @@ type FieldMapping struct {
 	Container  []string
 	Service    []string
 	Operation  []string
+}
+
+func (m FieldMapping) Pretty() api.Text {
+	t := clicky.Text("")
+	if len(m.Namespace) > 0 {
+		t = t.NewLine().Append("namespace: ", "text-muted").Append(strings.Join(m.Namespace, ", "))
+	}
+	if len(m.Pod) > 0 {
+		t = t.NewLine().Append("pod: ", "text-muted").Append(strings.Join(m.Pod, ", "))
+	}
+	if len(m.Deployment) > 0 {
+		t = t.NewLine().Append("deployment: ", "text-muted").Append(strings.Join(m.Deployment, ", "))
+	}
+	if len(m.Container) > 0 {
+		t = t.NewLine().Append("container: ", "text-muted").Append(strings.Join(m.Container, ", "))
+	}
+	return t
 }
 
 func normalizeField(field string) string {
@@ -301,6 +321,7 @@ func findSimilarFields(availableFields []string, keywords []string) []string {
 			}
 		}
 	}
+	sort.Strings(suggestions)
 
 	// Limit to max 5 suggestions to keep output manageable
 	if len(suggestions) > 5 {

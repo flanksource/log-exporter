@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/flanksource/clicky/api"
-	"github.com/flanksource/duty/logs"
+	"github.com/flanksource/commons-db/logs"
 )
 
 func TestGenerateFieldSchema(t *testing.T) {
@@ -120,7 +120,7 @@ func TestConvertLogsToData(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := client.convertLogsToData(logLines, tt.fields, nil)
+			result, err := client.convertLogsToData(logLines, tt.fields, nil, nil)
 			if err != nil {
 				t.Errorf("convertLogsToData() error = %v", err)
 				return
@@ -172,31 +172,182 @@ func TestConvertLogsToData(t *testing.T) {
 	}
 }
 
-func TestParseFields(t *testing.T) {
+func TestConvertLogsToDataWithAliases(t *testing.T) {
+	client := &Client{
+		config: Config{},
+	}
+
+	logLines := []*logs.LogLine{
+		{
+			ID:       "test1",
+			Message:  "Test message",
+			Severity: "INFO",
+			Labels: map[string]string{
+				"kubernetes.namespace":  "production",
+				"kubernetes.pod.name":   "app-pod-123",
+				"some-very-long-field":  "value1",
+				"another.nested.field":  "value2",
+			},
+		},
+	}
+
 	tests := []struct {
-		name      string
-		fieldsStr string
-		want      []string
+		name         string
+		fields       []string
+		fieldAliases map[string]string
+		checkFields  map[string]string // expected field -> expected value
+		missingFields []string // fields that should NOT exist
 	}{
 		{
-			name:      "empty string",
-			fieldsStr: "",
-			want:      nil,
+			name:   "single field alias",
+			fields: []string{"some-very-long-field"},
+			fieldAliases: map[string]string{
+				"some-very-long-field": "short",
+			},
+			checkFields: map[string]string{
+				"short": "value1",
+			},
+			missingFields: []string{"some-very-long-field"},
 		},
 		{
-			name:      "single field",
-			fieldsStr: "timestamp",
-			want:      []string{"timestamp"},
+			name:   "multiple field aliases",
+			fields: []string{"kubernetes.namespace", "kubernetes.pod.name"},
+			fieldAliases: map[string]string{
+				"kubernetes.namespace": "ns",
+				"kubernetes.pod.name":  "pod",
+			},
+			checkFields: map[string]string{
+				"ns":  "production",
+				"pod": "app-pod-123",
+			},
+			missingFields: []string{"kubernetes.namespace", "kubernetes.pod.name"},
 		},
 		{
-			name:      "multiple fields",
-			fieldsStr: "timestamp,message,level",
-			want:      []string{"timestamp", "message", "level"},
+			name:   "mixed aliases and non-aliased fields",
+			fields: []string{"some-very-long-field", "message"},
+			fieldAliases: map[string]string{
+				"some-very-long-field": "short",
+			},
+			checkFields: map[string]string{
+				"short":   "value1",
+				"message": "Test message",
+			},
+			missingFields: []string{"some-very-long-field"},
 		},
 		{
-			name:      "fields with spaces",
-			fieldsStr: " timestamp , message , level ",
-			want:      []string{"timestamp", "message", "level"},
+			name:         "no aliases",
+			fields:       []string{"message", "severity"},
+			fieldAliases: nil,
+			checkFields: map[string]string{
+				"message":  "Test message",
+				"severity": "INFO",
+			},
+			missingFields: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := client.convertLogsToData(logLines, tt.fields, tt.fieldAliases, nil)
+			if err != nil {
+				t.Errorf("convertLogsToData() error = %v", err)
+				return
+			}
+
+			data, ok := result.([]map[string]interface{})
+			if !ok {
+				t.Errorf("Expected []map[string]interface{}, got %T", result)
+				return
+			}
+
+			if len(data) != 1 {
+				t.Errorf("convertLogsToData() got %d entries, want 1", len(data))
+				return
+			}
+
+			entry := data[0]
+
+			// Check expected fields
+			for field, expectedValue := range tt.checkFields {
+				if value, ok := entry[field]; !ok {
+					t.Errorf("Expected field %q to exist", field)
+				} else if value != expectedValue {
+					t.Errorf("Field %q = %v, want %v", field, value, expectedValue)
+				}
+			}
+
+			// Check that original field names were removed
+			for _, field := range tt.missingFields {
+				if _, ok := entry[field]; ok {
+					t.Errorf("Field %q should not exist after aliasing", field)
+				}
+			}
+		})
+	}
+}
+
+func TestParseFields(t *testing.T) {
+	tests := []struct {
+		name        string
+		fieldsStr   string
+		wantFields  []string
+		wantAliases map[string]string
+	}{
+		{
+			name:        "empty string",
+			fieldsStr:   "",
+			wantFields:  nil,
+			wantAliases: map[string]string{},
+		},
+		{
+			name:        "single field",
+			fieldsStr:   "timestamp",
+			wantFields:  []string{"timestamp"},
+			wantAliases: map[string]string{},
+		},
+		{
+			name:        "multiple fields",
+			fieldsStr:   "timestamp,message,level",
+			wantFields:  []string{"timestamp", "message", "level"},
+			wantAliases: map[string]string{},
+		},
+		{
+			name:        "fields with spaces",
+			fieldsStr:   " timestamp , message , level ",
+			wantFields:  []string{"timestamp", "message", "level"},
+			wantAliases: map[string]string{},
+		},
+		{
+			name:       "single field with alias",
+			fieldsStr:  "kubernetes.namespace:namespace",
+			wantFields: []string{"kubernetes.namespace"},
+			wantAliases: map[string]string{
+				"kubernetes.namespace": "namespace",
+			},
+		},
+		{
+			name:       "multiple fields with aliases",
+			fieldsStr:  "kubernetes.namespace:ns,kubernetes.pod.name:pod,message",
+			wantFields: []string{"kubernetes.namespace", "kubernetes.pod.name", "message"},
+			wantAliases: map[string]string{
+				"kubernetes.namespace": "ns",
+				"kubernetes.pod.name":  "pod",
+			},
+		},
+		{
+			name:       "fields with aliases and spaces",
+			fieldsStr:  " kubernetes.namespace : ns , kubernetes.pod.name : pod , message ",
+			wantFields: []string{"kubernetes.namespace", "kubernetes.pod.name", "message"},
+			wantAliases: map[string]string{
+				"kubernetes.namespace": "ns",
+				"kubernetes.pod.name":  "pod",
+			},
+		},
+		{
+			name:       "field with empty alias",
+			fieldsStr:  "kubernetes.namespace:,message",
+			wantFields: []string{"kubernetes.namespace", "message"},
+			wantAliases: map[string]string{},
 		},
 	}
 
@@ -204,14 +355,27 @@ func TestParseFields(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ParseFields(tt.fieldsStr)
 
-			if len(got) != len(tt.want) {
-				t.Errorf("ParseFields() = %v, want %v", got, tt.want)
+			if len(got.Fields) != len(tt.wantFields) {
+				t.Errorf("ParseFields().Fields = %v, want %v", got.Fields, tt.wantFields)
 				return
 			}
 
-			for i, field := range got {
-				if field != tt.want[i] {
-					t.Errorf("ParseFields()[%d] = %v, want %v", i, field, tt.want[i])
+			for i, field := range got.Fields {
+				if field != tt.wantFields[i] {
+					t.Errorf("ParseFields().Fields[%d] = %v, want %v", i, field, tt.wantFields[i])
+				}
+			}
+
+			if len(got.Aliases) != len(tt.wantAliases) {
+				t.Errorf("ParseFields().Aliases length = %v, want %v", len(got.Aliases), len(tt.wantAliases))
+				return
+			}
+
+			for field, alias := range tt.wantAliases {
+				if gotAlias, ok := got.Aliases[field]; !ok {
+					t.Errorf("ParseFields().Aliases missing key %v", field)
+				} else if gotAlias != alias {
+					t.Errorf("ParseFields().Aliases[%v] = %v, want %v", field, gotAlias, alias)
 				}
 			}
 		})

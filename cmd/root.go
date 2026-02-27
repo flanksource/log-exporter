@@ -17,6 +17,9 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "log-exporter",
 	Short: "Export logs from various data sources into different formats",
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		clicky.Flags.UseFlags()
+	},
 	Long: `A CLI tool for exporting logs from various data sources (OpenSearch, CloudWatch, Loki, etc.)
 and formatting them using clicky's powerful formatting capabilities.
 
@@ -44,7 +47,7 @@ func Execute() error {
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	clicky.BindAllFlags(rootCmd.PersistentFlags()).UseFlags()
+	clicky.BindAllFlags(rootCmd.PersistentFlags())
 
 	// Global flags
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.log-exporter.yaml)")

@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 
 	"github.com/flanksource/commons/logger"
@@ -70,6 +71,9 @@ and field names, automatic schema generation, and all clicky output formats.`,
   # Export specific fields to CSV
   log-exporter export opensearch --index logs --fields "timestamp,message,host,severity" --format csv -o logs.csv
 
+  # Export with field renaming (use colon to specify alias)
+  log-exporter export opensearch --index logs --fields "kubernetes.namespace:ns,kubernetes.pod.name:pod,message" --format csv -o logs.csv
+
   # Use embedded schema for field mapping and formatting
   log-exporter export opensearch --index logs --schema kubernetes --format html -o report.html
 
@@ -106,21 +110,21 @@ func init() {
 	flags := opensearchCmd.Flags()
 
 	// Connection flags
-	opensearchCmd.PersistentFlags().StringVar(&osFlags.host, "host", "http://localhost:9200", "OpenSearch host URL")
-	opensearchCmd.PersistentFlags().StringVarP(&osFlags.username, "username", "u", os.Getenv("OPENSEARCH_USERNAME"), "Username for authentication")
-	opensearchCmd.PersistentFlags().StringVarP(&osFlags.password, "password", "p", os.Getenv("OPENSEARCH_PASSWORD"), "Password for authentication")
+	opensearchCmd.PersistentFlags().StringVar(&osFlags.host, "host", lo.CoalesceOrEmpty(os.Getenv("OPENSEARCH_HOST"), "http://localhost:9200"), "OpenSearch host URL read from OPENSEARCH_HOST env variable if not set")
+	opensearchCmd.PersistentFlags().StringVarP(&osFlags.username, "username", "u", os.Getenv("OPENSEARCH_USERNAME"), "Username for authentication read from OPENSEARCH_USERNAME env variable if not set")
+	opensearchCmd.PersistentFlags().StringVarP(&osFlags.password, "password", "p", os.Getenv("OPENSEARCH_PASSWORD"), "Password for authentication read from OPENSEARCH_PASSWORD env variable if not set")
 
 	// Query flags
 	flags.StringVarP(&osFlags.index, "index", "i", "", "Index name or pattern (required)")
 	flags.StringVarP(&osFlags.query, "query", "q", "*", "Lucene query string or OpenSearch JSON Query DSL")
 	flags.StringVar(&osFlags.queryFile, "query-file", "", "Read query from JSON file (alternative to --query)")
-	flags.StringVar(&osFlags.fields, "fields", "", "Comma-separated list of fields to include")
+	flags.StringVar(&osFlags.fields, "fields", "", "Comma-separated list of fields to include. Use 'field:alias' to rename fields (e.g., 'kubernetes.namespace:ns,message')")
 	flags.StringVar(&osFlags.from, "from", "", "Start time (e.g., 'now-24h', 'now-7d/d', '2023-01-01T00:00:00Z')")
 	flags.StringVar(&osFlags.to, "to", "", "End time (e.g., 'now', 'now/d', '2023-01-02T00:00:00Z')")
 	flags.IntVarP(&osFlags.limit, "limit", "l", 500, "Maximum number of records to export")
 
 	// Output flags
-	flags.StringVarP(&osFlags.output, "output", "o", "logs.json", "Output file path (default: logs.json)")
+	flags.StringVarP(&osFlags.output, "output", "o", "", "Output file path")
 	flags.StringVar(&osFlags.schema, "schema", "", "Use embedded schema (kubernetes, otel, otel.http, otel.db, syslog) or custom schema file")
 	flags.StringVar(&osFlags.preset, "preset", "", "Use preset schema (kubernetes, jaeger, combined) - deprecated, use --schema instead")
 	flags.BoolVar(&osFlags.autoDetect, "auto-detect", true, "Automatically detect log type from index pattern")
@@ -211,18 +215,21 @@ func runOpensearchExport(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Parse fields with potential aliases
+	fieldsWithAliases := opensearch.ParseFields(osFlags.fields)
+
 	// Build export options
 	exportOpts := opensearch.ExportOptions{
-		Index:      osFlags.index,
-		Query:      query,
-		Fields:     opensearch.ParseFields(osFlags.fields),
-		From:       osFlags.from, // Pass raw string, will be parsed with datemath support
-		To:         osFlags.to,   // Pass raw string, will be parsed with datemath support
-		Limit:      osFlags.limit,
-		Output:     osFlags.output,
-		Schema:     osFlags.schema,
-		Preset:     osFlags.preset,
-		AutoDetect: osFlags.autoDetect,
+		Index:        osFlags.index,
+		Query:        query,
+		Fields:       fieldsWithAliases.Fields,
+		FieldAliases: fieldsWithAliases.Aliases,
+		From:         osFlags.from, // Pass raw string, will be parsed with datemath support
+		To:           osFlags.to,   // Pass raw string, will be parsed with datemath support
+		Limit:        osFlags.limit,
+		Output:       osFlags.output,
+		Schema:       osFlags.schema,
+		AutoDetect:   osFlags.autoDetect,
 		Filters: opensearch.FilterOptions{
 			K8sNamespace:  osFlags.k8sNamespace,
 			K8sPod:        osFlags.k8sPod,

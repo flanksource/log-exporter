@@ -62,25 +62,25 @@ func ResolveSchemaFields(schema *api.PrettyObject, availableFields []string) *ap
 	for i, field := range schema.Fields {
 		resolvedField := field // Copy the field
 
-		if field.Type == "array" && field.TableOptions.Fields != nil {
+		if field.Type == "array" && field.TableOptions.Columns != nil {
 			// This is a table field, resolve the nested fields
-			resolvedTableFields := make([]api.PrettyField, len(field.TableOptions.Fields))
+			resolvedTableFields := make([]api.PrettyField, len(field.TableOptions.Columns))
 
-			for j, tableField := range field.TableOptions.Fields {
+			for j, tableField := range field.TableOptions.Columns {
 				resolvedTableField := tableField // Copy the table field
 
 				// Resolve the field names using pattern matching to populate aliases
 				if resolvedNames := resolveFieldNames(tableField.Name, availableFields); len(resolvedNames) > 0 {
 					resolvedTableField.Aliases = resolvedNames
-					logger.Tracef("Resolved field '%s' -> aliases: %v\n", tableField.Name, resolvedNames)
+					logger.V(3).Infof("Resolved field '%s' -> aliases: %v", tableField.Name, resolvedNames)
 				} else {
-					logger.Tracef("Could not resolve field '%s'\n", tableField.Name)
+					logger.Tracef("Could not resolve field '%s'", tableField.Name)
 				}
 
 				resolvedTableFields[j] = resolvedTableField
 			}
 
-			resolvedField.TableOptions.Fields = resolvedTableFields
+			resolvedField.TableOptions.Columns = resolvedTableFields
 		}
 
 		resolvedSchema.Fields[i] = resolvedField
@@ -136,8 +136,8 @@ func GetFieldMappingFromSchema(resolvedSchema *api.PrettyObject) *FieldMapping {
 	// Find the table field (should be the first one in our schemas)
 	var tableFields []api.PrettyField
 	for _, field := range resolvedSchema.Fields {
-		if field.Type == "array" && field.TableOptions.Fields != nil {
-			tableFields = field.TableOptions.Fields
+		if field.Type == "array" && field.TableOptions.Columns != nil {
+			tableFields = field.TableOptions.Columns
 			break
 		}
 	}
@@ -154,7 +154,7 @@ func GetFieldMappingFromSchema(resolvedSchema *api.PrettyObject) *FieldMapping {
 			fieldNames = []string{field.Name}
 		}
 		switch canonicalName {
-		case "namespace":
+		case "namespace", "process.tag.k8s@namespace@name":
 			mapping.Namespace = fieldNames
 		case "pod":
 			mapping.Pod = fieldNames
@@ -176,12 +176,28 @@ func GetFieldMappingFromSchema(resolvedSchema *api.PrettyObject) *FieldMapping {
 func getCanonicalFieldName(label, name string) string {
 	// Map labels to canonical names
 	labelToCanonical := map[string]string{
-		"namespace":  "namespace",
-		"pod":        "pod",
-		"deployment": "deployment",
-		"container":  "container",
-		"service":    "service",
-		"operation":  "operation",
+		"namespace":                        "namespace",
+		"process.tag.k8s@namespace@name":   "namespace",
+		"pod":                              "pod",
+		"deployment":                       "deployment",
+		"container":                        "container",
+		"service":                          "service",
+		"operation":                        "operation",
+		"tag.http@method ":                 "http.method",
+		"tag.http@url":                     "http.url",
+		"tag.http@status_code":             "http.status_code",
+		"tag.http@remote@addr":             "http.remote_addr",
+		"tag.http@response@body":           "http.response.body",
+		"tag.db@statement":                 "db.statement",
+		"traceid":                          "traceID",
+		"spanid":                           "spanID",
+		"parentspanid":                     "parentSpanID",
+		"process.tag.k8s@deployment@name":  "deployment",
+		"process.tag.k8s@container@name":   "container",
+		"process.tag.k8s@pod@name":         "pod",
+		"process.tag.k8s@node@name":        "node",
+		"process.tag.k8s@statefulset@name": "statefulset",
+		"process.tag.k8s@replicaset@name":  "replicaset",
 	}
 
 	lowerLabel := strings.ToLower(label)

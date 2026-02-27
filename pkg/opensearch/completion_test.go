@@ -395,15 +395,15 @@ func TestEdgeCases(t *testing.T) {
 
 	t.Run("field parsing with special characters", func(t *testing.T) {
 		input := "@timestamp,kubernetes.labels.app/version,http.status_code"
-		fields := ParseFields(input)
+		result := ParseFields(input)
 
 		expected := []string{"@timestamp", "kubernetes.labels.app/version", "http.status_code"}
 
-		if len(fields) != len(expected) {
-			t.Errorf("Expected %d fields, got %d", len(expected), len(fields))
+		if len(result.Fields) != len(expected) {
+			t.Errorf("Expected %d fields, got %d", len(expected), len(result.Fields))
 		}
 
-		for i, field := range fields {
+		for i, field := range result.Fields {
 			if field != expected[i] {
 				t.Errorf("Field[%d] = %s, want %s", i, field, expected[i])
 			}
