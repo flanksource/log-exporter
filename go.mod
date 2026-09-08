@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/flanksource/clicky v1.42.3
-	github.com/flanksource/commons v1.53.1
+	github.com/flanksource/commons v1.59.0
 	github.com/flanksource/commons-db v1.0.0
 	github.com/opensearch-project/opensearch-go/v2 v2.3.0
 	github.com/samber/lo v1.53.0
@@ -73,8 +73,8 @@ require (
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
-	github.com/flanksource/gomplate/v3 v3.24.82 // indirect
-	github.com/flanksource/is-healthy v1.0.88 // indirect
+	github.com/flanksource/gomplate/v3 v3.24.89 // indirect
+	github.com/flanksource/is-healthy v1.0.92 // indirect
 	github.com/flanksource/kubectl-neat v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
